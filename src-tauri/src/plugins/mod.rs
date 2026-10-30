@@ -161,6 +161,30 @@ fn window_game_hides(app: &tauri::AppHandle, label: &str) -> bool {
     !GAME_OPEN.load(std::sync::atomic::Ordering::Relaxed) && all_listed(&window_plugins(app, label), &hide_closed(app))
 }
 
+/// A focus-hidden window may have been closed or hidden by its owner while
+/// away. Do not resurrect it; game-closed hiding takes over when applicable.
+pub fn restore_after_focus(app: &tauri::AppHandle, window: &tauri::WebviewWindow) -> bool {
+    let label = window.label();
+    if widgets::is_closed(label) {
+        return false;
+    }
+    if label == dock::LABEL && dock::shown_members(app).is_empty() {
+        return false;
+    }
+    if let Some(id) = label.strip_prefix("plugin-") {
+        let windows: serde_json::Map<String, Value> = app.try_state::<AppState>()
+            .and_then(|s| s.settings.get(WINDOWS_KEY)).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        if windows.get(id).and_then(Value::as_str) == Some("hidden") || disabled(app).iter().any(|off| off == id) {
+            return false;
+        }
+    }
+    if window_game_hides(app, label) {
+        hold_for_game(window);
+        return false;
+    }
+    true
+}
+
 /// Whether `id`'s windows are to stay hidden now: AION2 closed, and the
 /// plugin set to hide then.
 pub fn game_hides(app: &tauri::AppHandle, id: &str) -> bool {

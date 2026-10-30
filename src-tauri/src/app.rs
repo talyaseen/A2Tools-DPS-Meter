@@ -202,23 +202,32 @@ fn show_meter_again(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
     let _ = window.emit("force-resize", ());
 }
 
-/// The windows that hide when AION2 isn't in front: with the meter's "Hide
-/// when AION2 isn't focused" (`meter`), Settings, Battle History and Details
-/// (only the meter hid, and the rest stayed over the browser: Hirai,
-/// 2026-10-19); and, whether or not that is on, the windows and icons of
-/// plugins set to (Settings → Plugins). A plugin's own option did nothing
-/// while the meter's was off (2026-10-27).
+/// The master focus setting covers tool windows, plugin panels and widgets.
+/// Plugins may also opt in independently in Settings → Plugins.
 fn hides_with_meter(app: &tauri::AppHandle, label: &str, meter: bool) -> bool {
-    (meter && (TOOL_WINDOWS.contains(&label) || label.starts_with("details-"))) || crate::plugins::hides_unfocused(app, label)
+    focus_window_selected(label, meter, crate::plugins::hides_unfocused(app, label))
+}
+
+fn focus_window_selected(label: &str, meter: bool, plugin_opted_in: bool) -> bool {
+    (meter && follows_meter_focus(label)) || plugin_opted_in
+}
+
+fn follows_meter_focus(label: &str) -> bool {
+    TOOL_WINDOWS.contains(&label) || label.starts_with("details-")
+        || crate::plugins::is_plugin_window(label) || crate::plugins::widgets::parse_label(label).is_some()
 }
 
 /// Hide those of `hides_with_meter` that are up, noting each.
 fn hide_with_meter(app: &tauri::AppHandle, meter: bool, hidden: &mut std::collections::HashSet<String>) {
     for (label, window) in app.webview_windows() {
-        if !hides_with_meter(app, &label, meter) || hidden.contains(&label) {
+        if !hides_with_meter(app, &label, meter) {
             continue;
         }
-        if window.is_visible().unwrap_or(false) && !platform::window::is_hidden_in_place(&window) {
+        // A plugin may show an already-owned window again while we are away.
+        // Re-hide it, but never take ownership of a manually minimized window.
+        if window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false)
+            && !platform::window::is_hidden_in_place(&window)
+        {
             platform::window::hide_in_place(&window);
             hidden.insert(label);
         }
@@ -226,18 +235,21 @@ fn hide_with_meter(app: &tauri::AppHandle, meter: bool, hidden: &mut std::collec
 }
 
 /// Show again those `hide_with_meter` hid.
-fn show_with_meter(app: &tauri::AppHandle, hidden: &mut std::collections::HashSet<String>) {
-    for label in hidden.drain() {
-        let Some(window) = app.get_webview_window(&label) else { continue };
-        // A widget its plugin closed meanwhile stays hidden.
-        if crate::plugins::widgets::is_closed(&label) {
-            continue;
+fn show_with_meter(app: &tauri::AppHandle, hidden: &mut std::collections::HashSet<String>, keep_hidden: impl Fn(&str) -> bool) {
+    hidden.retain(|label| {
+        if keep_hidden(label) {
+            return true;
+        }
+        let Some(window) = app.get_webview_window(label) else { return false };
+        if !crate::plugins::restore_after_focus(app, &window) {
+            return false;
         }
         if !platform::window::reveal_in_place(&window) {
             platform::window::show_on_top_without_focus(&window);
         }
         crate::plugins::widgets::relock(app, &window);
-    }
+        false
+    });
 }
 
 /// The label of the meter window titled `title`.
@@ -301,23 +313,52 @@ fn load_window_place(app: &tauri::AppHandle, title: &str) -> Option<(i32, i32, i
 /// left the meter up for a moment after an alt-tab (2026-10-17). The check
 /// still runs, for every other desktop and as a fallback.
 fn auto_hide_now(app: &tauri::AppHandle) {
+    sync_meter_focus(app, true);
+}
+
+/// Read the current option and foreground on the GUI thread: an older queued
+/// focus callback must not hide the meter after the option was turned off.
+fn sync_meter_focus(app: &tauri::AppHandle, hide_now: bool) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || apply_meter_focus(&handle, hide_now));
+}
+
+static HIDDEN_BY_FOCUS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn restore_meter_after_rule(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if HIDDEN_BY_RULE.load(std::sync::atomic::Ordering::Relaxed) || !meter_wanted(&handle) {
+            return;
+        }
+        // The other rule released it: focus hiding takes responsibility for
+        // restoring it, now or once the game returns/the option is turned off.
+        HIDDEN_BY_FOCUS.store(true, std::sync::atomic::Ordering::Relaxed);
+        apply_meter_focus(&handle, false);
+    });
+}
+
+fn apply_meter_focus(app: &tauri::AppHandle, hide_now: bool) {
+    use std::sync::atomic::Ordering::Relaxed;
     let Some(state) = app.try_state::<AppState>() else { return };
-    if state.settings.get("dpsMeter.autoHideMeter").unwrap_or_default() != "true" || !meter_wanted(app) {
-        return;
-    }
     // Hidden by a rule of its own (AION2 closed, solo, out of combat): the
     // game coming to the front doesn't bring it back.
-    if HIDDEN_BY_RULE.load(std::sync::atomic::Ordering::Relaxed) {
+    if !meter_wanted(app) || HIDDEN_BY_RULE.load(Relaxed) {
+        HIDDEN_BY_FOCUS.store(false, Relaxed);
         return;
     }
     let Some(window) = app.get_webview_window("main") else { return };
-    let front = platform::window_detector::is_aion2_foreground() || window.is_focused().unwrap_or(false);
+    let enabled = state.settings.get("dpsMeter.autoHideMeter").as_deref() == Some("true");
+    let front = platform::window::front_is_ours_or_game();
     let hidden = !window.is_visible().unwrap_or(true)
         || window.is_minimized().unwrap_or(false)
         || platform::window::is_hidden_in_place(&window);
-    if front && hidden {
-        show_meter_again(app, &window);
-    } else if !front && !hidden {
+    if !enabled || front {
+        if HIDDEN_BY_FOCUS.swap(false, Relaxed) && hidden {
+            show_meter_again(app, &window);
+        }
+    } else if enabled && !front && hide_now && !hidden {
+        HIDDEN_BY_FOCUS.store(true, Relaxed);
         platform::window::minimize_off_top(&window);
     }
 }
@@ -392,8 +433,21 @@ fn screenshot_tool(app: &tauri::AppHandle, in_front: bool) {
     }
 }
 
-fn sync_click_through(app: &tauri::AppHandle, lock: &OverlayLock, over_button: bool) {
+fn sync_click_through(app: &tauri::AppHandle, lock: &Arc<OverlayLock>, over_button: bool) {
+    let (handle, lock) = (app.clone(), lock.clone());
+    // Never hold the cursor-state mutex while waiting for the GUI thread:
+    // focus restoration also reapplies this state there.
+    let _ = app.run_on_main_thread(move || apply_click_through(&handle, &lock, over_button));
+}
+
+fn apply_click_through(app: &tauri::AppHandle, lock: &OverlayLock, over_button: bool) {
     use std::sync::atomic::Ordering;
+    let Some(main) = app.get_webview_window("main") else { return };
+    if !main.is_visible().unwrap_or(false) || main.is_minimized().unwrap_or(false)
+        || platform::window::is_hidden_in_place(&main)
+    {
+        return;
+    }
     let mut applied = lock.applied.lock();
     let ignore = screenshot_tool_in_front()
         || click_through(lock.locked.load(Ordering::SeqCst), over_button, lock.card_open.load(Ordering::SeqCst));
@@ -1175,6 +1229,9 @@ fn update_settings(
         return;
     }
     if state.settings.set(&key, &value) {
+        if key == "dpsMeter.autoHideMeter" {
+            sync_meter_focus(&app, false);
+        }
         if key == ALL_TARGETS_WINDOW_KEY {
             apply_all_targets_window(&state, &value);
         }
@@ -4198,23 +4255,19 @@ pub fn run() {
                         let idle = tick_count > 20 && out_of_combat(last_combat, now_ms, combat_secs);
                         let want = wanted && (closed_or_solo || idle);
                         if want != hidden_closed {
+                            HIDDEN_BY_RULE.store(want, std::sync::atomic::Ordering::Relaxed);
                             if let Some(window) = &main {
                                 if want {
                                     platform::window::minimize_off_top(window);
-                                } else if wanted
-                                    && !(on("dpsMeter.autoHideMeter")
-                                        && !platform::window_detector::is_aion2_foreground()
-                                        && !window.is_focused().unwrap_or(false))
-                                {
+                                } else if wanted {
                                     // Hidden by the player meanwhile, it stays
                                     // so; with another program in front and
                                     // "Hide when AION2 isn't focused" on, the
                                     // check below brings it back with the game.
-                                    show_meter_again(&handle, window);
+                                    restore_meter_after_rule(&handle);
                                 }
                             }
                             hidden_closed = want;
-                            HIDDEN_BY_RULE.store(want, std::sync::atomic::Ordering::Relaxed);
                         }
 
                         // --- Auto-hide when AION2 loses focus (every tick) ---
@@ -4232,43 +4285,23 @@ pub fn run() {
                         let auto_hide = meter_auto_hide
                             && !hidden_closed
                             && meter_wanted(&handle);
-                        if auto_hide {
-                            if let Some(window) = handle.get_webview_window("main") {
-                                let aion_fg = platform::window_detector::is_aion2_foreground();
-                                let is_self_fg = window.is_focused().unwrap_or(false);
-                                let is_visible = window.is_visible().unwrap_or(true);
-                                let is_minimized = window.is_minimized().unwrap_or(false);
-                                if tick_count % 4 == 0 {
-                                    tracing::trace!("auto-hide: aion_fg={} self_fg={} visible={} minimized={} hide_delay={}",
-                                        aion_fg, is_self_fg, is_visible, is_minimized, hide_delay);
-                                }
-                                // Linux hides it in place (transparent, mapped).
-                                let hidden = !is_visible || is_minimized
-                                    || platform::window::is_hidden_in_place(&window);
-                                if aion_fg || is_self_fg {
-                                    hide_delay = 0;
-                                    if hidden {
-                                        show_meter_again(&handle, &window);
-                                    }
-                                } else if !hidden {
-                                    // Wait 3 ticks (1.5s) before hiding to avoid
-                                    // flickering during alt-tab transitions
-                                    hide_delay += 1;
-                                    if hide_delay >= 3 {
-                                        platform::window::minimize_off_top(&window);
-                                    }
-                                }
-                            }
+                        let front = platform::window::front_is_ours_or_game();
+                        hide_delay = if auto_hide && !front { hide_delay.saturating_add(1) } else { 0 };
+                        // Also reconcile when disabled, restoring only a meter
+                        // this focus rule hid. The queued action reads the option
+                        // again, so an older callback cannot undo that restore.
+                        if tick_count > 20 {
+                            sync_meter_focus(&handle, auto_hide && hide_delay >= 3);
                         }
                         if others_auto_hide {
                             // The rest go and come back with it: gone while
                             // another program is in front, back with the game
                             // or any of the meter's windows (Settings in use
                             // stays).
-                            if platform::window::front_is_ours_or_game() {
+                            if front {
                                 others_delay = 0;
                                 if !hidden_with_meter.is_empty() {
-                                    show_with_meter(&handle, &mut hidden_with_meter);
+                                    show_with_meter(&handle, &mut hidden_with_meter, |_| false);
                                 }
                             } else {
                                 // Plugins' windows and icons at the first look
@@ -4277,10 +4310,13 @@ pub fn run() {
                                 // quick alt-tab doesn't take a form in use away.
                                 others_delay += 1;
                                 hide_with_meter(&handle, meter_auto_hide && others_delay >= 3, &mut hidden_with_meter);
+                                // Turning off the master restores its windows
+                                // even when another plugin's own rule stays on.
+                                show_with_meter(&handle, &mut hidden_with_meter, |label| hides_with_meter(&handle, label, meter_auto_hide));
                             }
                         } else if !hidden_with_meter.is_empty() {
                             // Auto-hide turned off meanwhile: back.
-                            show_with_meter(&handle, &mut hidden_with_meter);
+                            show_with_meter(&handle, &mut hidden_with_meter, |_| false);
                         }
 
                         // --- Save window position every ~5 seconds (every 10 ticks) ---
@@ -4591,6 +4627,19 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn master_focus_hiding_includes_plugin_panels_dock_and_widgets() {
+        for label in ["settings", "history", "details", "details-fight", "plugin-cooldowns", "plugins-dock",
+            "pw_cooldowns_bar", "pw_cooldowns_skills", "pw_cooldowns_buffs"] {
+            assert!(super::focus_window_selected(label, true, false), "{label}");
+            assert!(!super::focus_window_selected(label, false, false), "{label}");
+        }
+        for label in ["main", "unrelated", "pw_invalid", "pw_cooldowns_"] {
+            assert!(!super::focus_window_selected(label, true, false), "{label}");
+        }
+        assert!(super::focus_window_selected("pw_cooldowns_buffs", false, true));
+    }
+
     // Updates are an online build's: the offline one has no updater.
     #[cfg(feature = "online")]
     #[test]
