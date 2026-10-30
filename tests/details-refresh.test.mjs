@@ -62,18 +62,20 @@ function detailsView({ targetCount = 20, panelOpen = true } = {}) {
     selectedTargetId: null, selectedAttackerIds: [7], selectedAttackerLabel: "Actor 7", COMPACT_MAX_SKILLS: 5,
     detailsMode: "dmg", lastMeasuredNameWidth: 0, fightStartMs: 0, fightBossName: "", fightDungeonId: 0, historyRecord: null,
     buffTimeline: null, staggerPanel: null, liveBuffs: null,
+    stageToken: 0, sectionsHeld: false, pendingStarts: null, detailsCacheByRowId: new Map(),
     getSelectableTargets: () => targets,
     getTargetById: (id) => targets.find((target) => target.targetId === id),
     getTargetLabel: (target) => `Target ${target.targetId}`,
     getDungeonId: () => null,
     getCachedDetails: () => null,
-    buildCombinedDetails: (list, total) => ({ list, total }),
+    buildCombinedDetails: (list, total) => ({ list: list.filter(Boolean), total }),
     resolveActorLabel: (id) => `Actor ${id}`,
     resolveRowLabel: (row) => row.name || `Actor ${row.id}`,
     labelText: (_, fallback) => fallback,
     targetMatchesSelectedAttackers: () => true,
     loadDetailsContext: () => { contextReads++; },
     syncSelectedAttackersFromLabel() {}, syncSortButtons() {}, syncModeButtons() {}, updateHeaderText() {}, updateGridColumns() {},
+    renderPartyBars() {}, renderDpsChart() {}, renderTimeline() {}, renderBuffs() {},
     restoreLayout() {},
     render: (details, row) => {
       rendered.push({ details, row });
@@ -87,7 +89,7 @@ function detailsView({ targetCount = 20, panelOpen = true } = {}) {
     requestAnimationFrame: (callback) => callback(),
   });
   vm.runInContext(refreshSource, context);
-  const api = vm.runInContext("({ refresh, open, close, selectTarget: applyTargetSelection, selectAttacker: applyAttackerSelection })", context);
+  const api = vm.runInContext("({ refresh, open, close, onAudienceChanged, selectTarget: applyTargetSelection, selectAttacker: applyAttackerSelection })", context);
   const pending = () => requests.filter((request) => !request.settled);
   const complete = async (count, version = 1, beforeBatch = () => {}) => {
     let completed = 0;
@@ -209,6 +211,40 @@ test("changing the attacker supersedes an active tick and renders only the lates
   assert.ok(view.rendered[0].details.list.every((details) => details.attackers?.[0] === 8));
   assert.ok(view.context.lastUnfilteredDetails.list.every((details) => details.attackers === null));
   assert.equal(view.requests.length, 44, "the stale queued calls never reach the backend");
+  assert.equal(view.logs.length, 0);
+});
+
+test('narrowing Everyone to Self discards a deferred aggregate and refreshes immediately', async () => {
+  const view = detailsView({ targetCount: 1 });
+  view.context.lastRow = { id: null };
+  view.context.selectedAttackerIds = null;
+  view.context.detailsActors = new Map([[7, { actorId: 7, isLocalPlayer: true }]]);
+  view.context.detailsCacheByRowId.set('old', { version: 'everyone' });
+  view.context.liveBuffs = { version: 'everyone' };
+  const old = view.api.refresh();
+  await tick();
+  const oldRequests = [...view.pending()];
+  assert.equal(oldRequests.length, 1);
+  const generation = view.context.openSeq;
+  const narrowed = view.api.onAudienceChanged('self');
+  assert.ok(view.context.openSeq > generation);
+  assert.equal(view.context.lastDetails, null, 'the old figures are cleared immediately');
+  assert.equal(view.context.lastUnfilteredDetails, null);
+  assert.equal(view.context.detailsCacheByRowId.size, 0);
+  assert.equal(view.context.liveBuffs, null);
+  assert.equal(view.context.statSlots[0].valueEl.textContent, '-');
+  await tick();
+  const current = view.pending().filter(request => !oldRequests.includes(request));
+  assert.equal(current.length, 1, 'the new audience is not coalesced behind an old in-flight load');
+  current[0].resolve('self');
+  await narrowed;
+  assert.equal(view.rendered.length, 1);
+  assert.ok(view.rendered[0].details.list.every(details => details.version === 'self'));
+  oldRequests.forEach(request => request.resolve('everyone'));
+  await old;
+  await view.flushCancelled();
+  assert.equal(view.rendered.length, 1, 'the old aggregate never publishes after narrowing');
+  assert.ok(view.context.lastDetails.list.every(details => details.version === 'self'));
   assert.equal(view.logs.length, 0);
 });
 

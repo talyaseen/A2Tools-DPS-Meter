@@ -2512,6 +2512,12 @@ impl DataStorage {
         self.inner.read().party_members.clone()
     }
 
+    /// Group and identity metadata from one read for a consistent display scope.
+    pub fn party_display_snapshot(&self) -> (HashMap<String, PartyMember>, u64, Option<i64>, Option<String>) {
+        let inner = self.inner.read();
+        (inner.party_members.clone(), inner.party_generation, inner.local_player_id, inner.local_character_name.clone())
+    }
+
     /// The roster a saved fight takes its players' level, gear score, combat
     /// power and identity from: the party now, and those who have left it as
     /// it last had them. Only for what a fight record keeps; who is in the

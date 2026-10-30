@@ -38,6 +38,11 @@ pub struct PersonalData {
     /// from the HP the boss lost (`DpsCalculator::world_boss_rows`).
     #[serde(default)]
     pub is_others: bool,
+    /// Current-roster display metadata; it does not change captured totals.
+    #[serde(default)]
+    pub is_party_member: bool,
+    #[serde(default)]
+    pub is_local_player: bool,
     #[serde(default)]
     pub hps: f64,
     #[serde(default)]
@@ -75,6 +80,8 @@ impl PersonalData {
             is_supporter: false,
             uses_a2tools: false,
             is_others: false,
+            is_party_member: false,
+            is_local_player: false,
             hps: 0.0,
             heal_amount: 0.0,
             stagger: 0,
@@ -96,6 +103,8 @@ impl PersonalData {
             is_supporter: false,
             uses_a2tools: false,
             is_others: false,
+            is_party_member: false,
+            is_local_player: false,
             hps: 0.0,
             heal_amount: 0.0,
             stagger: 0,

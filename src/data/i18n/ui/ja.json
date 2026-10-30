@@ -1,4 +1,12 @@
 {
+  "audience": {
+    "title": "表示するプレイヤー",
+    "everyone": "全員",
+    "party": "パーティー / レイド",
+    "self": "自分",
+    "waiting": "自分のキャラクターまたはパーティーを確認中",
+    "empty": "この表示対象のプレイヤーはいません"
+  },
   "header": {
     "title": "A2Tools DPS Meter",
     "display": {

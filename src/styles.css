@@ -1298,6 +1298,10 @@ body.mainPlayerDpsBold :is(.meter, .barPreviewPanel) .item .content .dps > p {
   transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
 }
 .footerBtns .targetModeBtn { min-width: 44px; }
+.footerBtns .audienceSelect { max-width: 100px; cursor: pointer; letter-spacing: 0; }
+.footerBtns .audienceSelect option { background: rgb(var(--hud-bg)); color: #fff; }
+.audienceEmpty { padding: 8px; color: rgba(255, 255, 255, 0.65); font-size: 11px; text-align: center; }
+.audienceEmpty[hidden] { display: none; }
 body:not(.noStatColours) .footerBtns .metricToggleBtn[data-metric="dps"] { color: var(--metric-dps); }
 body:not(.noStatColours) .footerBtns .metricToggleBtn[data-metric="totalDamage"] { color: var(--metric-totalDamage); }
 body:not(.noStatColours) .footerBtns .metricToggleBtn[data-metric="hps"] { color: var(--metric-hps); }

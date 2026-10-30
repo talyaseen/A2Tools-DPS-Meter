@@ -440,6 +440,8 @@ mod tests {
                     level: 0,
                     gear_score: 0,
                     combat_power: 0,
+                    is_party_member: false,
+                    is_local_player: false,
                 })
                 .collect(),
             is_train: false,

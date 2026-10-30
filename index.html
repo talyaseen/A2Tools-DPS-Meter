@@ -1386,6 +1386,7 @@
           </div>
         </div>
         <div class="list"></div>
+        <div class="audienceEmpty" role="status" aria-live="polite" hidden></div>
         <div class="meterFooter">
           <!-- The footer's displays: a click opens their menu (core.js bindFooterMenu). -->
           <div class="footerInfo" role="button" tabindex="0" aria-haspopup="menu" data-no-drag="true">
@@ -1408,6 +1409,11 @@
           </div>
           </div>
           <div class="footerBtns">
+            <select class="footerBtn audienceSelect" aria-label="Players shown" data-i18n-aria-label="audience.title" data-no-drag="true">
+              <option value="everyone" data-i18n="audience.everyone">Everyone</option>
+              <option value="party" data-i18n="audience.party" selected>Party / raid</option>
+              <option value="self" data-i18n="audience.self">Me</option>
+            </select>
             <button
               class="footerBtn targetModeBtn"
               type="button"

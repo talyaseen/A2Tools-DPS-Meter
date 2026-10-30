@@ -1,6 +1,7 @@
 pub mod damage_packet;
 pub mod dps_data;
 pub mod personal_data;
+pub mod audience;
 pub mod job_class;
 pub mod analyzed_skill;
 pub mod special_damage;

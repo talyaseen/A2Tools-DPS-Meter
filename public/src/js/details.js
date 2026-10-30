@@ -3673,6 +3673,40 @@ const createDetailsUI = ({
     await refreshDetailsView(seq);
   };
 
+  // A display-scope change invalidates an older, broader load immediately.
+  // Ordinary refresh ticks still coalesce behind an active request above.
+  const onAudienceChanged = (audience) => {
+    if (historyRecord) return;
+    ++openSeq;
+    ++stageToken;
+    sectionsHeld = false;
+    pendingStarts = null;
+    activeDetailsLoad = null;
+    renderedSelectionKey = "";
+    lastDetails = null;
+    lastUnfilteredDetails = null;
+    detailsCacheByRowId.clear();
+    loadDetailsContext();
+    if (Array.isArray(selectedAttackerIds)) {
+      selectedAttackerIds = selectedAttackerIds.filter((id) => detailsActors.has(Number(id)));
+      if (!selectedAttackerIds.length) selectedAttackerIds = null;
+    }
+    if (!selectedAttackerIds) {
+      selectedAttackerLabel = audience === "self" ? labelText("audience.self", "Me")
+        : audience === "everyone" ? labelText("audience.everyone", "Everyone")
+        : labelText("audience.party", "Party / raid");
+    }
+    if (lastRow?.id && !detailsActors.has(Number(lastRow.id))) lastRow = { ...NULL_ROW, name: selectedAttackerLabel };
+    clearDetailsValues();
+    renderPartyBars([], 0);
+    renderDpsChart({ skills: [], healSkills: [] });
+    renderTimeline({ skills: [], healSkills: [] });
+    liveBuffs = null;
+    buffTimeline?.clear();
+    staggerPanel?.clear();
+    if (detailsPanel.classList.contains("open")) return refresh();
+  };
+
   const isPinned = () => pinnedRowId !== null;
 
   // In HEAL the amount and share columns are healing, and the timeline keeps
@@ -3806,5 +3840,5 @@ const createDetailsUI = ({
     },
   });
 
-  return { open, close, isOpen, isPinned, render, updateLabels, refresh, updateGridColumns, openHistoryFight, resetDetailsMode, refreshPartyStat };
+  return { open, close, isOpen, isPinned, render, updateLabels, refresh, onAudienceChanged, updateGridColumns, openHistoryFight, resetDetailsMode, refreshPartyStat };
 };

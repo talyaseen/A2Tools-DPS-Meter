@@ -1,4 +1,12 @@
 {
+  "audience": {
+    "title": "표시할 플레이어",
+    "everyone": "모두",
+    "party": "파티 / 공격대",
+    "self": "나",
+    "waiting": "내 캐릭터나 파티 정보 대기 중",
+    "empty": "표시할 플레이어가 없습니다"
+  },
   "header": {
     "title": "A2Tools DPS Meter",
     "display": {

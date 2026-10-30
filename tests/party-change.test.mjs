@@ -23,6 +23,9 @@ function meter() {
   vm.runInContext(source, context);
   vm.runInContext("window.dpsData = { getDpsData: () => cachedDpsJson };", context);
   const app = vm.runInContext("new DpsApp()", context);
+  // These tests cover retention of the complete canonical fight. The group
+  // view separately drops cached players absent from current membership.
+  app.audience = 'everyone';
   app.elList = { querySelector: () => ({}) };
   app.detailsUI = { close() {}, isOpen: () => false };
   app.meterUI = {
@@ -35,8 +38,8 @@ function meter() {
   app.getTargetLabel = () => "";
   app.getRowsSummary = () => ({ listSignature: "" });
   const send = (names, partyGeneration) => {
-    const map = Object.fromEntries(names.map((name, i) => [90000001 + i, { nickname: name, job: "Chanter", dps: 0, amount: 0 }]));
-    context.cachedDpsJson = JSON.stringify({ targetMode: "bossTargets", targetId: 0, battleTime: 0, map, partyGeneration });
+    const map = Object.fromEntries(names.map((name, i) => [90000001 + i, { nickname: name, job: "Chanter", dps: 0, amount: 0, isPartyMember: true, isLocalPlayer: name === "Nullception" }]));
+    context.cachedDpsJson = JSON.stringify({ targetMode: "bossTargets", targetId: 0, battleTime: 0, map, partyGeneration, audienceKnown: true });
     app.fetchDps();
     return shown.at(-1);
   };

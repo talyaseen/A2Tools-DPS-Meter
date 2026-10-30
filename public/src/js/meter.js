@@ -316,7 +316,7 @@ const createMeterUI = ({
   // metric lines up down the rows (styles.css --mw-<metric>).
   const columnWidths = new Map();
 
-  const renderRows = (rows, rankById) => {
+  const renderRows = (rows, rankById, audienceRows = rows) => {
     const now = nowMs();
     const nextVisibleIds = new Set();
 
@@ -327,11 +327,11 @@ const createMeterUI = ({
     }
 
     let topMetric = 1;
-    for (const row of rows) {
+    for (const row of audienceRows) {
       const metricValue = Number(resolveMetric(row)?.value) || 0;
       if (metricValue > topMetric) topMetric = metricValue;
     }
-    const visibleTotalDamage = rows.reduce((sum, row) => sum + (Number(row?.totalDamage) || 0), 0);
+    const visibleTotalDamage = audienceRows.reduce((sum, row) => sum + (Number(row?.totalDamage) || 0), 0);
 
     // Build order key to detect if DOM reordering is needed
     let orderKey = "";
@@ -610,7 +610,7 @@ const createMeterUI = ({
         if (id) rankById.set(id, index + 1);
       });
 
-    renderRows(getDisplayRows(arr), rankById);
+    renderRows(getDisplayRows(arr), rankById, arr);
   };
 
   const updateFromRows = (rows) => {

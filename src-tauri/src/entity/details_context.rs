@@ -97,7 +97,14 @@ pub struct DetailsActorSummary {
     pub gear_score: i32,
     #[serde(default)]
     pub combat_power: i64,
+    /// Live display metadata. False is omitted so saved fights keep their shape.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_party_member: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_local_player: bool,
 }
+
+fn is_false(value: &bool) -> bool { !value }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -119,6 +126,12 @@ pub struct DetailsContext {
     pub current_target_id: i32,
     pub targets: Vec<DetailsTargetSummary>,
     pub actors: Vec<DetailsActorSummary>,
+    #[serde(default)]
+    pub audience_known: bool,
+    #[serde(default)]
+    pub party_generation: u64,
+    #[serde(default)]
+    pub local_player_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

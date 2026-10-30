@@ -84,6 +84,8 @@ class DpsApp {
     this.WINDOW_TITLE_POLL_MS = 3000;
     this.USER_NAME = "";
     this.onlyShowUser = false;
+    this.audience = "party";
+    this.audienceKnown = false;
     this.debugLoggingEnabled = false;
     this.pinMeToTop = false;
     this.slimMode = false;
@@ -96,6 +98,7 @@ class DpsApp {
     this.storageKeys = {
       userName: "dpsMeter.userName",
       onlyShowUser: "dpsMeter.onlyShowUser",
+      audience: "dpsMeter.audience",
       allTargetsWindowMs: "dpsMeter.allTargetsWindowMs",
       updateRateMs: "dpsMeter.updateRateMs",
       trainSelectionMode: "dpsMeter.trainSelectionMode",
@@ -657,6 +660,7 @@ class DpsApp {
       this.detailsUI?.updateLabels?.();
       this.detailsUI?.refresh?.();
       this.updateDisplayToggleLabel();
+      this.updateAudienceControl();
       if (this.battleTime?.setAnalysisTextProvider) {
         this.battleTime.setAnalysisTextProvider(getBattleTimeStatusText);
       }
@@ -1331,6 +1335,7 @@ class DpsApp {
       .then((details) => {
         if (this.hoverTooltipRequestSeqByRowId.get(rowId) !== requestSeq
           || requestSeq.targetContext !== this.getHoverTooltipTargetContext()) return;
+        if (!this.latestRowsById?.has(String(rowId))) return;
         this.hoverTooltipPendingRowIds.delete(rowId);
         const lightweightDetails = { skills: Array.isArray(details?.skills) ? details.skills.slice(0, 5) : [], snapshot };
         this.hoverTooltipCacheByRowId.set(rowId, lightweightDetails);
@@ -1343,6 +1348,7 @@ class DpsApp {
       .catch((error) => {
         if (this.hoverTooltipRequestSeqByRowId.get(rowId) !== requestSeq
           || requestSeq.targetContext !== this.getHoverTooltipTargetContext()) return;
+        if (!this.latestRowsById?.has(String(rowId))) return;
         this.hoverTooltipPendingRowIds.delete(rowId);
         if (this.hoveredDetailsRowId !== rowId || this.hoverTooltipDismissed) return;
         window.javaBridge?.logToDebug?.(`Hover skill details failed: ${error?.message || error}`);
@@ -1362,8 +1368,8 @@ class DpsApp {
           if (currentRow) next = { row: currentRow, forceRefresh: true };
         }
         if (next && Number(next.row?.id) === this.hoveredDetailsRowId && !this.hoverTooltipDismissed) {
-          const currentRow = this.latestRowsById?.get(String(next.row.id)) || next.row;
-          this.applyHoverTooltip(currentRow, { forceRefresh: next.forceRefresh, keepContent: true });
+          const currentRow = this.latestRowsById?.get(String(next.row.id));
+          if (currentRow) this.applyHoverTooltip(currentRow, { forceRefresh: next.forceRefresh, keepContent: true });
         }
       });
   }
@@ -1463,7 +1469,18 @@ class DpsApp {
       partyGeneration,
       zoneGeneration,
       instanceGeneration,
+      audienceKnown,
     } = this.buildRowsFromPayload(raw);
+    this.audienceKnown = audienceKnown;
+    const nextAudienceScope = JSON.stringify([partyGeneration, localPlayerId, audienceKnown]);
+    const audienceScopeChanged = this._lastAudienceScope != null && this._lastAudienceScope !== nextAudienceScope;
+    this._lastAudienceScope = nextAudienceScope;
+    if (audienceScopeChanged && this.audience !== "everyone") {
+      this.latestRowsById = new Map();
+      this.meterUI?.onResetMeterUi?.();
+      this.invalidateAudienceScope();
+      this.closeOrphanTooltip();
+    }
     // Boss mode with no boss engaged: say what it is waiting for. The rows of
     // the last fight can still be on screen (the meter keeps them), so this
     // goes by the target alone. Set before anything below can return early,
@@ -1491,6 +1508,7 @@ class DpsApp {
         this._lastRenderedListSignature = "";
         this._lastRenderedRowsSummary = null;
         this.meterUI?.onResetMeterUi?.();
+        this.updateAudienceEmptyState([]);
         return;
       }
     }
@@ -1557,6 +1575,7 @@ class DpsApp {
       this._lastRenderedListSignature = "";
       this._lastRenderedRowsSummary = null;
       this.meterUI?.onResetMeterUi?.();
+      this.updateAudienceEmptyState([]);
       return;
     }
     if (partyChanged && isOutOfCombat) {
@@ -1582,6 +1601,7 @@ class DpsApp {
       this._lastRenderedListSignature = "";
       this._lastRenderedRowsSummary = null;
       this.meterUI?.onResetMeterUi?.();
+      this.updateAudienceEmptyState([]);
       return;
     }
     // 빈값은 ui 안덮어씀
@@ -1592,6 +1612,7 @@ class DpsApp {
       else {
         this._battleTimeVisible = false;
         this.battleTime.setVisible(false);
+        this.updateAudienceEmptyState([]);
         this.updateConnectionStatusUi();
         return;
       }
@@ -1633,9 +1654,8 @@ class DpsApp {
     }
 
     this.updateConnectionStatusUi();
-    if (targetMode === "trainTargets" && this.isLocalUserIdentified()) {
-      rowsToRender = rowsToRender.filter((row) => row.isUser); // by id or name: an unnamed row is still yours
-    }
+    rowsToRender = this.filterRowsByAudience(rowsToRender);
+    this.updateAudienceEmptyState(rowsToRender);
     // render
     this.lastDungeonId = dungeonId;
     let nextTargetLabel = this.getTargetLabel({ targetId, targetName, targetMode, dungeonId, targetMobCode });
@@ -1711,7 +1731,8 @@ class DpsApp {
       : null;
 
     const mapObj = payload?.map && typeof payload.map === "object" ? payload.map : {};
-    const rows = this.buildRowsFromMapObject(mapObj, localPlayerId);
+    const rows = this.buildRowsFromMapObject(mapObj, localPlayerId, Object.prototype.hasOwnProperty.call(payload || {}, "audienceKnown"));
+    const audienceKnown = payload?.audienceKnown === true;
 
     const battleTimeMsRaw = payload?.battleTime;
     const battleTimeMs = Number.isFinite(Number(battleTimeMsRaw)) ? Number(battleTimeMsRaw) : null;
@@ -1748,6 +1769,7 @@ class DpsApp {
       partyGeneration,
       zoneGeneration,
       instanceGeneration,
+      audienceKnown,
     };
   }
 
@@ -1755,7 +1777,7 @@ class DpsApp {
   // id even before it has a name: matching by name alone left an unnamed
   // "#id" row of yours unmarked, so it was neither pinned nor kept past the
   // player limit, and you dropped off a busy meter.
-  buildRowsFromMapObject(mapObj, localPlayerId = null) {
+  buildRowsFromMapObject(mapObj, localPlayerId = null, authoritativeAudience = false) {
     const rows = [];
     const localId = Number(localPlayerId);
     const hasLocalId = Number.isFinite(localId) && localId > 0;
@@ -1804,6 +1826,9 @@ class DpsApp {
       // players actually in your party; 0 means "unknown", not "zero CP".
       const combatPower = Math.trunc(Number(isObj ? value.combatPower : 0)) || 0;
       const gearScore = Math.trunc(Number(isObj ? value.gearScore : 0)) || 0;
+      const isLocalPlayer = !isOthers && (authoritativeAudience || typeof value?.isLocalPlayer === "boolean"
+        ? value?.isLocalPlayer === true
+        : ((!!name && name === this.USER_NAME) || (hasLocalId && numericId === localId)));
 
       rows.push({
         id: String(id),
@@ -1818,7 +1843,9 @@ class DpsApp {
         damageContribution,
         combatPower,
         gearScore,
-        isUser: !isOthers && ((!!name && name === this.USER_NAME) || (hasLocalId && numericId === localId)),
+        isUser: isLocalPlayer,
+        isLocalPlayer,
+        isPartyMember: !isOthers && (value?.isPartyMember === true || isLocalPlayer),
         isOthers,
         isIdentifying,
         // Resolved in Rust against a downloaded roster; the frontend only
@@ -1841,6 +1868,8 @@ class DpsApp {
       }
       const scoreRow = (candidate) => {
         let score = 0;
+        if (candidate.isLocalPlayer) score += 8;
+        if (candidate.isPartyMember) score += 4;
         if (candidate.job) score += 2;
         if (!candidate.isIdentifying) score += 1;
         return score;
@@ -1872,18 +1901,19 @@ class DpsApp {
   updateSnapshotNicknameForUser(rows, snapshot) {
     if (!Array.isArray(snapshot) || snapshot.length === 0) return snapshot;
     const localId = Number(this.localPlayerId);
-    if (!Number.isFinite(localId) || localId <= 0) return snapshot;
-    const incoming = Array.isArray(rows)
-      ? rows.find((row) => Number(row?.id) === localId && !row.isIdentifying)
-      : null;
-    if (!incoming) return snapshot;
+    const incomingById = new Map((Array.isArray(rows) ? rows : []).map((row) => [String(row.id), row]));
     return snapshot.map((row) => {
-      if (Number(row?.id) !== localId) return row;
+      const incoming = incomingById.get(String(row.id)) || (row.isLocalPlayer && !row.isIdentifying
+        ? (Array.isArray(rows) ? rows : []).find((next) => next.isLocalPlayer === true && !next.isIdentifying && next.name === row.name)
+        : null);
+      if (!incoming) return { ...row, isUser: false, isLocalPlayer: false, isPartyMember: false };
+      const rename = Number.isFinite(localId) && localId > 0 && Number(row.id) === localId && !incoming.isIdentifying;
       return {
         ...row,
-        name: incoming.name,
-        isIdentifying: false,
+        ...(rename ? { name: incoming.name, isIdentifying: false } : {}),
         isUser: incoming.isUser,
+        isLocalPlayer: incoming.isLocalPlayer,
+        isPartyMember: incoming.isPartyMember,
       };
     });
   }
@@ -2216,10 +2246,35 @@ class DpsApp {
   getDetailsContext() {
     const raw = window.dpsData?.getDetailsContext?.();
     if (!raw) return null;
-    if (typeof raw === "string") {
-      return this.safeParseJSON(raw, null);
-    }
-    return raw;
+    const context = typeof raw === "string" ? this.safeParseJSON(raw, null) : raw;
+    return this.filterDetailsContext(context);
+  }
+
+  filterDetailsContext(context) {
+    if (!context || this.audience === "everyone" || window._historyDetailsOverride) return context;
+    const current = this.readAudienceState();
+    const sameScope = !current || (String(context.partyGeneration) === String(current.partyGeneration)
+      && String(context.localPlayerId ?? "") === String(current.localPlayerId ?? ""));
+    const actors = sameScope && (!current || current.audienceKnown) && context.audienceKnown === true && Array.isArray(context.actors)
+      ? context.actors.filter((actor) => this.audience === "self"
+        ? actor.isLocalPlayer === true
+        : actor.isLocalPlayer === true || actor.isPartyMember === true)
+      : [];
+    const allowed = new Set(actors.map((actor) => String(actor.actorId)));
+    const targets = (Array.isArray(context.targets) ? context.targets : []).map((target) => {
+      const actorDamage = Object.fromEntries(Object.entries(target.actorDamage || {}).filter(([id]) => allowed.has(id)));
+      return { ...target, actorDamage, totalDamage: Object.values(actorDamage).reduce((sum, value) => sum + (Number(value) || 0), 0) };
+    });
+    return { ...context, actors, targets };
+  }
+
+  readAudienceState() {
+    const raw = window.dpsData?.getDpsData?.();
+    const current = typeof raw === "string" ? this.safeParseJSON(raw, null) : raw;
+    if (!current || !Object.prototype.hasOwnProperty.call(current, "partyGeneration")
+      || !Object.prototype.hasOwnProperty.call(current, "localPlayerId")) return null;
+    return { partyGeneration: current.partyGeneration, localPlayerId: current.localPlayerId ?? null,
+      audienceKnown: current.audienceKnown === true };
   }
 
   async getDetails(
@@ -2228,7 +2283,37 @@ class DpsApp {
   ) {
     let raw = null;
     let backendFiltered = false;
-    if (window._historyDetailsOverride) {
+    const audienceGeneration = this._audienceGeneration || 0;
+    const audienceState = JSON.stringify(this.readAudienceState());
+    const liveDetails = !window._historyDetailsOverride;
+    const showCombinedTotals = !Array.isArray(attackerIds) || attackerIds.length === 0;
+    let audienceIds = null;
+    if (!window._historyDetailsOverride && this.audience && this.audience !== "everyone") {
+      const context = this.getDetailsContext();
+      audienceIds = new Set((context?.actors || []).map((actor) => Number(actor.actorId)));
+      // A healer can already have a meter row before the damage-oriented
+      // Details context names them. Trust only the current displayed row's
+      // native membership, and add that one actor rather than opening the scope.
+      const currentRow = this.latestRowsById?.get(String(row?.id));
+      const rowId = Number(currentRow?.id);
+      const current = this.readAudienceState();
+      const rowScopeCurrent = !current || (String(this._lastPartyGeneration) === String(current.partyGeneration)
+        && String(this.localPlayerId ?? "") === String(current.localPlayerId ?? ""));
+      const rowAllowed = rowScopeCurrent && this.audienceKnown === true && !currentRow?.isOthers && (this.audience === "self"
+        ? currentRow?.isLocalPlayer === true
+        : currentRow?.isLocalPlayer === true || currentRow?.isPartyMember === true);
+      if (rowAllowed && Number.isFinite(rowId) && rowId > 0) audienceIds.add(rowId);
+      const requested = Array.isArray(attackerIds) && attackerIds.length > 0 ? attackerIds.map(Number) : [...audienceIds];
+      attackerIds = requested.filter((id) => audienceIds.has(id));
+      audienceIds = new Set(attackerIds);
+      const targets = (context?.targets || []).filter((target) => !targetId || Number(target.targetId) === Number(targetId));
+      totalTargetDamage = targets.reduce((sum, target) => sum + (Number(target.totalDamage) || 0), 0);
+      // An empty list means "all" to the older bridge, so do not send it.
+      if (audienceIds.size === 0) raw = { skills: [], healSkills: [], battleTime: 0 };
+    }
+    if (raw) {
+      // No known player belongs to the selected display audience yet.
+    } else if (window._historyDetailsOverride) {
       raw = window._historyDetailsOverride;
     } else if (targetId && window.dpsData?.getTargetDetails) {
       const payload = Array.isArray(attackerIds) ? JSON.stringify(attackerIds) : "";
@@ -2238,6 +2323,12 @@ class DpsApp {
       backendFiltered = true;
     } else {
       raw = await window.dpsData?.getBattleDetail?.(row.id, { summaryOnly });
+    }
+    if (liveDetails && (audienceGeneration !== (this._audienceGeneration || 0)
+      || audienceState !== JSON.stringify(this.readAudienceState()))) {
+      const cancelled = new Error("The displayed player audience changed during this request");
+      cancelled.code = "AUDIENCE_CHANGED";
+      throw cancelled;
     }
     let detailObj = raw;
     // globalThis.uiDebug?.log?.("getBattleDetail", detailObj);
@@ -2342,9 +2433,9 @@ class DpsApp {
     };
 
     const detailSkills = Array.isArray(detailObj?.skills) ? detailObj.skills : null;
-    const attackerIdSet = !backendFiltered && Array.isArray(attackerIds) && attackerIds.length > 0
+    const attackerIdSet = audienceIds || (!backendFiltered && Array.isArray(attackerIds) && attackerIds.length > 0
       ? new Set(attackerIds.map(Number))
-      : null;
+      : null);
     if (detailSkills) {
       for (const value of detailSkills) {
         if (!value || typeof value !== "object") continue;
@@ -2400,6 +2491,7 @@ class DpsApp {
       }
     } else {
       for (const [code, value] of Object.entries(detailObj)) {
+        if (audienceIds) continue; // legacy aggregate fields have no actor identity
         if (!value || typeof value !== "object") continue;
 
         const nameRaw = typeof value.skillName === "string" ? value.skillName.trim() : "";
@@ -2603,10 +2695,10 @@ class DpsApp {
       healSkills: healSkillsOut,
       showSkillIcons,
       perActorStats,
-      showCombinedTotals: !attackerIds || attackerIds.length === 0,
+      showCombinedTotals,
       pingHistory: Array.isArray(detailObj?.pingHistory) ? detailObj.pingHistory : [],
       // Players who died in the fight (ms from its start), for the DPS chart.
-      deaths: Array.isArray(detailObj?.deaths) ? detailObj.deaths : null,
+      deaths: Array.isArray(detailObj?.deaths) ? detailObj.deaths.filter((death) => !audienceIds || audienceIds.has(Number(death.actorId))) : null,
     };
   }
 
@@ -2638,6 +2730,7 @@ class DpsApp {
     });
     this.bindTargetMenu();
     this.bindMetricMenu();
+    this.initAudienceControl();
     this.bindFooterMenu();
     this.logoBtn?.addEventListener("click", () => {
       this.captureMainMeterScreenshot();
@@ -2946,7 +3039,7 @@ class DpsApp {
     const storedTheme = this.safeGetSetting(this.storageKeys.theme);
 
     this.setUserName(storedName, { persist: false, syncBackend });
-    this.setOnlyShowUser(false, { persist: false });
+    this.setAudience(this.readAudience(), { persist: syncBackend });
     this.setDebugLogging(storedDebugLogging, { persist: false, syncBackend });
     this.setPinMeToTop(storedPinMeToTop, { persist: false });
     // The Classic skins are retired: Classic becomes Standard, Classic Slim
@@ -5038,14 +5131,78 @@ class DpsApp {
     this.refreshSettingsPanelIfOpen();
   }
 
+  readAudience() {
+    const stored = this.safeGetSetting(this.storageKeys.audience);
+    if (["everyone", "party", "self"].includes(stored)) return stored;
+    if (stored !== null && stored !== undefined) return "party";
+    const legacy = this.safeGetSetting(this.storageKeys.onlyShowUser);
+    return legacy === "true" ? "self" : legacy === "false" ? "everyone" : "party";
+  }
+
+  setAudience(value, { persist = false } = {}) {
+    const next = ["everyone", "party", "self"].includes(value) ? value : "party";
+    const changed = this.audience !== next;
+    this.audience = next;
+    this.onlyShowUser = this.audience === "self";
+    if (persist) this.safeSetSetting(this.storageKeys.audience, this.audience);
+    this.updateAudienceControl();
+    this._lastRenderedListSignature = "";
+    this.renderCurrentRows();
+    if (changed) this.invalidateAudienceScope();
+    else this.detailsUI?.refresh?.();
+  }
+
+  invalidateAudienceScope() {
+    this._audienceGeneration = (this._audienceGeneration || 0) + 1;
+    this.hoverTooltipRequestSeqByRowId?.clear();
+    this.hoverTooltipPendingRowIds?.clear();
+    this.hoverTooltipCacheByRowId?.clear();
+    this.hoverTooltipQueued = null;
+    if (this.detailsUI?.onAudienceChanged) this.detailsUI.onAudienceChanged(this.audience);
+    else this.detailsUI?.refresh?.();
+  }
+
+  initAudienceControl() {
+    const select = document.querySelector(".audienceSelect");
+    if (!select || select.dataset.wired) return;
+    select.dataset.wired = "1";
+    select.addEventListener("change", () => this.setAudience(select.value, { persist: true }));
+    this.updateAudienceControl();
+  }
+
+  updateAudienceControl() {
+    const select = document.querySelector?.(".audienceSelect");
+    if (select) select.value = this.audience || "party";
+  }
+
+  // Apply the display choice before totals and the meter's existing row cap.
+  // Canonical rows stay intact so switching back can show the same fight.
+  filterRowsByAudience(rows) {
+    const source = Array.isArray(rows) ? rows : [];
+    const audience = this.audience || "party";
+    const visible = audience === "everyone" ? source
+      : this.audienceKnown !== true ? []
+      : source.filter((row) => !row.isOthers && (audience === "self"
+        ? row.isLocalPlayer === true
+        : row.isPartyMember === true || row.isLocalPlayer === true));
+    const total = visible.reduce((sum, row) => sum + Math.max(0, Number(row.totalDamage) || 0), 0);
+    return visible.map((row) => ({ ...row,
+      damageContribution: total > 0 ? Math.max(0, Number(row.totalDamage) || 0) / total * 100 : 0,
+    }));
+  }
+
+  updateAudienceEmptyState(rows) {
+    const empty = document.querySelector?.(".audienceEmpty");
+    if (!empty) return;
+    empty.hidden = rows.length > 0 || this.isCollapse;
+    const waiting = this.audience !== "everyone" && this.audienceKnown !== true;
+    empty.textContent = waiting
+      ? (this.i18n?.t?.("audience.waiting", "Waiting for your character or group") ?? "Waiting for your character or group")
+      : (this.i18n?.t?.("audience.empty", "No players in this view") ?? "No players in this view");
+  }
+
   setOnlyShowUser(enabled, { persist = false } = {}) {
-    this.onlyShowUser = !!enabled;
-    if (persist) {
-      localStorage.setItem(this.storageKeys.onlyShowUser, String(this.onlyShowUser));
-    }
-    if (!this.isCollapse) {
-      this.fetchDps();
-    }
+    this.setAudience(enabled ? "self" : "everyone", { persist });
   }
 
   setDebugLogging(enabled, { persist = false, syncBackend = false } = {}) {
@@ -6325,6 +6482,10 @@ class DpsApp {
       this.setPlayerLimit(value, { persist: false });
       return;
     }
+    if (key === this.storageKeys.audience) {
+      this.setAudience(value, { persist: false });
+      return;
+    }
     if (key === this.storageKeys.barGap) {
       const next = this.applyBarGap(value, { persist: false });
       const shown = next ?? this.defaultBarGap();
@@ -6623,10 +6784,8 @@ class DpsApp {
       this.closeOrphanTooltip();
       return;
     }
-    let rowsToRender = Array.isArray(this.lastSnapshot) ? this.lastSnapshot : [];
-    if (this.lastTargetMode === "trainTargets" && this.isLocalUserIdentified()) {
-      rowsToRender = rowsToRender.filter((row) => row.isUser); // by id or name: an unnamed row is still yours
-    }
+    const rowsToRender = this.filterRowsByAudience(Array.isArray(this.lastSnapshot) ? this.lastSnapshot : []);
+    this.updateAudienceEmptyState(rowsToRender);
     const rowsSummary = this.getRowsSummary(rowsToRender);
     if (rowsSummary.listSignature !== this._lastRenderedListSignature) {
       const reasons = this.describeRowsChange(rowsSummary, this._lastRenderedRowsSummary);
@@ -6644,6 +6803,8 @@ class DpsApp {
       this._lastRenderedRowsSummary = rowsSummary;
     }
     this.updateMeterTotalBar(rowsToRender);
+    this.latestRowsById = new Map(rowsToRender.map((row) => [String(row.id), row]));
+    this.hoverTooltipCacheByRowId?.clear();
     this.meterUI?.updateFromRows?.(rowsToRender);
     this.closeOrphanTooltip();
   }
@@ -6655,7 +6816,7 @@ class DpsApp {
   closeOrphanTooltip() {
     if (!this.hoverTooltipEl?.classList.contains("isVisible")) return;
     const id = this.hoveredDetailsRowId;
-    const row = !this.isCollapse && id != null
+    const row = !this.isCollapse && id != null && this.latestRowsById?.has(String(id))
       ? this.elList?.querySelector?.(`.item[data-row-id="${CSS.escape(String(id))}"]`)
       : null;
     if (row) return;

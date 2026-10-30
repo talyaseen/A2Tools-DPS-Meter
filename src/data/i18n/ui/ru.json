@@ -1,4 +1,12 @@
 {
+  "audience": {
+    "title": "Отображаемые игроки",
+    "everyone": "Все",
+    "party": "Группа / рейд",
+    "self": "Я",
+    "waiting": "Ожидание вашего персонажа или группы",
+    "empty": "В этом режиме нет игроков"
+  },
   "header": {
     "title": "A2Tools DPS Meter",
     "display": {

@@ -1,4 +1,12 @@
 {
+  "audience": {
+    "title": "顯示玩家",
+    "everyone": "所有人",
+    "party": "隊伍 / 團隊",
+    "self": "自己",
+    "waiting": "正在等待角色或隊伍資訊",
+    "empty": "此檢視中沒有玩家"
+  },
   "header": {
     "title": "A2Tools DPS Meter",
     "display": {

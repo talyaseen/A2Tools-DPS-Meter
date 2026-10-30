@@ -17,6 +17,10 @@ function setup(getBattleDetail) {
   });
   vm.runInContext(source, context);
   const app = vm.runInContext("Object.create(DpsApp.prototype)", context);
+  // These timing tests exercise an explicitly unfiltered view with four
+  // displayed synthetic players. Audience membership is covered separately.
+  app.audience = 'everyone';
+  app.latestRowsById = new Map([1, 2, 3, 4].map(id => [String(id), { id }]));
   app.dpsFormatter = new Intl.NumberFormat("en-US");
   app.elList = { querySelector: () => ({}) };
   app.hoveredDetailsRowId = 1;
@@ -314,6 +318,7 @@ function hoverPipeline(mode = 'allTargets') {
   vm.runInContext(source, context);
   vm.runInContext(`window.dpsData = { getDpsData: () => cachedDpsJson, ${battleDetailMethod} };`, context);
   const app = vm.runInContext('new DpsApp()', context);
+  app.audience = 'everyone';
   app.hoverTooltipEl = { setAttribute() {}, classList: { contains: () => visible, remove() { visible = false; } } };
   app.elList = { querySelector: () => ({}) };
   app.detailsUI = { close() {}, isOpen: () => false };
@@ -494,6 +499,19 @@ test('switching players cannot display a late answer for the previous player', a
   await tick();
   assert.equal(rendered.length, 1);
   assert.equal(app.hoverTooltipCacheByRowId.get(1).skills[0].dmg, 500);
+});
+
+test('a late summary cannot render or cache a row hidden by an audience change', async () => {
+  const request = deferred();
+  const { app, rendered } = setup(() => request.promise);
+  app.applyHoverTooltip({ id: 1 });
+  app.setAudience('self');
+  assert.equal(app.latestRowsById.has('1'), false);
+  request.resolve(response(500));
+  await tick();
+  assert.equal(rendered.length, 1, 'the pending row never replaces its loading state after leaving the view');
+  assert.equal(app.hoverTooltipCacheByRowId.size, 0);
+  assert.equal(app.hoverTooltipPendingRowIds.size, 0);
 });
 
 test('invalidating a fight rejects old answers without clearing the new pending request', async () => {

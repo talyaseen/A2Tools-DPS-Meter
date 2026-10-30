@@ -1,4 +1,12 @@
 {
+  "audience": {
+    "title": "Joueurs affichés",
+    "everyone": "Tout le monde",
+    "party": "Groupe / raid",
+    "self": "Moi",
+    "waiting": "En attente de votre personnage ou groupe",
+    "empty": "Aucun joueur dans cette vue"
+  },
   "header": {
     "title": "A2Tools DPS Meter",
     "display": {

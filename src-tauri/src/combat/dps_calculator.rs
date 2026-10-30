@@ -4,6 +4,26 @@ use std::sync::Arc;
 use crate::combat::data_storage::{DataStorage, TargetCombatData};
 use crate::combat::ping_tracker::PingTracker;
 use crate::entity::details_context::*;
+
+fn display_membership(
+    id: i32, nickname: &str, others: bool, local_ids: &Option<HashSet<i32>>,
+    local_name: Option<&str>, party: &HashMap<String, crate::combat::data_storage::PartyMember>,
+) -> (bool, bool) {
+    if others { return (false, false); }
+    let name = nickname.trim();
+    let local = local_ids.as_ref().is_some_and(|ids| ids.contains(&id))
+        || local_name.is_some_and(|n| !n.trim().is_empty() && n.trim() == name);
+    (local, local || (!name.is_empty() && party.contains_key(name)))
+}
+
+fn display_local_ids(local: Option<i64>, summons: &HashMap<i32, i32>) -> Option<HashSet<i32>> {
+    let local = i32::try_from(local?).ok()?;
+    let mut ids = HashSet::from([local]);
+    for (&summon, &owner) in summons {
+        if summon_resolver::resolve(owner, summons) == local { ids.insert(summon); }
+    }
+    Some(ids)
+}
 use crate::entity::dps_data::DpsData;
 use crate::entity::fight_record::FightRecord;
 use crate::entity::job_class::JobClass;
@@ -711,9 +731,19 @@ impl DpsCalculator {
     /// `last_dps_snapshot`: a party row kept there outlived the party, and
     /// one added only on a fresh result vanished on the next cached one.
     fn finalize_rows(&self, dps_data: &mut DpsData) {
-        dps_data.party_generation = self.data_storage.party_generation();
         (dps_data.zone_generation, dps_data.instance_generation) = self.data_storage.zone_generations();
         self.add_party_rows(dps_data);
+        let summons = self.data_storage.get_summon_data();
+        let (party, party_generation, local_id, local_name) = self.data_storage.party_display_snapshot();
+        let local_ids = display_local_ids(local_id, &summons);
+        dps_data.party_generation = party_generation;
+        dps_data.local_player_id = local_id;
+        dps_data.audience_known = local_ids.is_some() || local_name.as_deref().is_some_and(|n| !n.trim().is_empty()) || !party.is_empty();
+        for (&id, row) in &mut dps_data.map {
+            let (local, member) = display_membership(id, &row.nickname, row.is_others, &local_ids, local_name.as_deref(), &party);
+            row.is_local_player = local;
+            row.is_party_member = member;
+        }
         self.mark_supporters(dps_data);
     }
 
@@ -1215,6 +1245,8 @@ impl DpsCalculator {
                         level: roster.map(|m| m.level).unwrap_or(0),
                         gear_score: roster.map(|m| m.gear_score).unwrap_or(0),
                         combat_power: roster.map(|m| m.combat_power).unwrap_or(0),
+                        is_party_member: false,
+                        is_local_player: false,
                     }
                 })
                 .collect();
@@ -1315,7 +1347,9 @@ impl DpsCalculator {
         let nickname_data = self.data_storage.get_nicknames();
         let summon_data = self.data_storage.get_summon_data();
         let supporters = self.data_storage.supporters();
-        let party_members = self.data_storage.get_party_members();
+        let (party_members, party_generation, local_player_id, local_name) = self.data_storage.party_display_snapshot();
+        let local_ids = display_local_ids(local_player_id, &summon_data);
+        let audience_known = local_ids.is_some() || local_name.as_deref().is_some_and(|n| !n.trim().is_empty()) || !party_members.is_empty();
         let mob_hp_data = self.data_storage.get_mob_hp_data();
         let mob_data = self.data_storage.get_mob_data();
 
@@ -1405,8 +1439,26 @@ impl DpsCalculator {
             });
         }
 
+        // HPS can show a group member who never damaged a target. Include that
+        // player's live display identity too so a restricted Details view can
+        // request their healing without widening to unidentified actors.
+        if let (Some(from), Some(to)) = (
+            combat_data.values().map(|t| t.first_damage_time).min(),
+            combat_data.values().map(|t| t.last_damage_time).max(),
+        ) {
+            for (actor, _) in self.data_storage.get_heal_totals_in_window(from, to) {
+                let id = summon_resolver::resolve(actor, &summon_data);
+                if id <= 0 { continue; }
+                let nick = resolve_nickname(id, &nickname_data, &summon_data);
+                if actor_meta.values().any(|(name, _)| name == &nick) { continue; }
+                let job = party_members.get(&nick).and_then(|p| p.job).map(|j| j.class_name().to_string())
+                    .or_else(|| self.cached_job(&nick)).unwrap_or_default();
+                actor_meta.insert(id, (nick, job));
+            }
+        }
         let actors: Vec<DetailsActorSummary> = actor_meta.iter()
             .map(|(&id, (nick, job))| {
+                let (is_local_player, is_party_member) = display_membership(id, nick, false, &local_ids, local_name.as_deref(), &party_members);
                 let job_id = class_by_damage(
                     combat_data.values()
                         .flat_map(|td| td.actors.get(&id))
@@ -1453,6 +1505,8 @@ impl DpsCalculator {
                     level: 0,
                     gear_score: 0,
                     combat_power: 0,
+                    is_party_member,
+                    is_local_player,
                 }
             })
             .collect();
@@ -1461,6 +1515,9 @@ impl DpsCalculator {
             current_target_id: self.data_storage.current_target(),
             targets,
             actors,
+            audience_known,
+            party_generation,
+            local_player_id,
         }
     }
 
@@ -1982,6 +2039,95 @@ mod tests {
     fn meter(storage: &Arc<DataStorage>) -> DpsCalculator {
         DpsCalculator::new(storage.clone(), Arc::new(SkillLookup::new()),
             Arc::new(NpcLookup::new()), Arc::new(PingTracker::new()))
+    }
+
+    #[test]
+    fn audience_metadata_tracks_the_current_group_on_cached_rows_without_filtering_damage() {
+        use crate::combat::data_storage::PartyMember;
+        let storage = Arc::new(DataStorage::new());
+        storage.set_local_player_id(Some(101));
+        storage.set_local_character_name(Some("Me".into()));
+        for (id, name) in [(101, "Me"), (102, "Member"), (103, "Stranger")] {
+            storage.append_nickname_authoritative(id, name);
+            storage.append_damage(hit(id, 50_000, 1_000 + id as i64));
+        }
+        let member = |slot| PartyMember { slot, ..Default::default() };
+        storage.set_party_roster(vec![("Me".into(), member(1)), ("Member".into(), member(2))], true);
+        let mut calc = meter(&storage);
+        calc.set_target_selection_mode("allTargets");
+        let first = calc.get_dps();
+        assert!(first.audience_known);
+        assert!(first.map[&101].is_local_player && first.map[&101].is_party_member);
+        assert!(first.map[&102].is_party_member, "membership does not depend on combat power being known");
+        assert!(!first.map[&103].is_party_member && !first.map[&103].is_local_player);
+        let total: f64 = first.map.values().map(|p| p.amount).sum();
+        assert_eq!(total, 1500.0, "canonical rows still include everyone's damage");
+
+        storage.set_party_roster(vec![("Me".into(), member(1)), ("NewMember".into(), member(2))], true);
+        let cached = calc.get_dps();
+        assert_ne!(cached.party_generation, first.party_generation);
+        assert_eq!(cached.local_player_id, Some(101));
+        assert!(!cached.map[&102].is_party_member, "former fight membership is not current group membership");
+        assert!(cached.map.values().any(|p| p.nickname == "NewMember" && p.is_party_member));
+        assert_eq!(cached.map.values().map(|p| p.amount).sum::<f64>(), total);
+
+        let context = calc.get_details_context();
+        assert!(context.audience_known);
+        assert_eq!(context.party_generation, cached.party_generation);
+        assert_eq!(context.local_player_id, cached.local_player_id);
+        assert!(context.actors.iter().any(|a| a.actor_id == 101 && a.is_local_player));
+        assert!(context.actors.iter().any(|a| a.actor_id == 102 && !a.is_party_member));
+        assert_eq!(context.targets.iter().map(|t| t.total_damage).sum::<i32>(), 1500);
+    }
+
+    #[test]
+    fn self_aliases_and_summons_remain_local_while_unknown_people_are_unclassified() {
+        let storage = Arc::new(DataStorage::new());
+        storage.append_nickname_authoritative(101, "Me");
+        storage.append_damage(hit(101, 50_000, 1_000));
+        let mut calc = meter(&storage);
+        calc.set_target_selection_mode("allTargets");
+        let unknown = calc.get_dps();
+        assert!(!unknown.audience_known);
+        assert!(unknown.map.values().all(|r| !r.is_local_player && !r.is_party_member));
+        storage.set_local_character_name(Some("Me".into()));
+        storage.set_local_player_id(Some(401));
+        storage.append_nickname_authoritative(401, "Me");
+        storage.append_summon(101, 501);
+        storage.append_damage(hit(501, 50_000, 2_000));
+        let known = calc.get_dps();
+        assert!(known.audience_known);
+        assert!(known.map.values().filter(|r| r.nickname == "Me").all(|r| r.is_local_player && r.is_party_member));
+        let mut synthetic = known.clone();
+        let mut others = crate::entity::personal_data::PersonalData::new("Me".into());
+        others.is_others = true;
+        synthetic.map.insert(OTHERS_ROW_ID, others);
+        calc.finalize_rows(&mut synthetic);
+        assert!(!synthetic.map[&OTHERS_ROW_ID].is_local_player && !synthetic.map[&OTHERS_ROW_ID].is_party_member);
+    }
+
+    #[test]
+    fn live_details_classifies_a_group_healer_without_changing_target_damage() {
+        use crate::combat::data_storage::PartyMember;
+        let storage = Arc::new(DataStorage::new());
+        storage.set_local_player_id(Some(101));
+        storage.set_local_character_name(Some("Me".into()));
+        storage.append_nickname_authoritative(101, "Me");
+        storage.append_nickname_authoritative(102, "Healer");
+        storage.set_party_roster(vec![("Me".into(), PartyMember { slot: 1, ..Default::default() }),
+            ("Healer".into(), PartyMember { slot: 2, ..Default::default() })], true);
+        storage.append_damage(hit(101, 50_000, 1_000));
+        storage.append_damage(hit(101, 50_000, 2_000));
+        storage.append_heal(102, 17_110_000, 900, false, 1_500);
+        let mut calc = meter(&storage);
+        calc.set_target_selection_mode("allTargets");
+        let shown = calc.get_dps();
+        assert_eq!(shown.map[&102].heal_amount, 900.0);
+        assert!(shown.map[&102].is_party_member);
+        let context = calc.get_details_context();
+        assert!(context.actors.iter().any(|a| a.actor_id == 102 && a.is_party_member && !a.is_local_player));
+        assert_eq!(context.targets.iter().map(|t| t.total_damage).sum::<i32>(), 1000);
+        assert_eq!(calc.get_target_details(50_000, Some(&[102])).heal_skills.iter().map(|s| s.dmg).sum::<i32>(), 900);
     }
 
     fn assert_hover_matches_full(calc: &DpsCalculator, target: i32, actors: Option<&[i32]>) {

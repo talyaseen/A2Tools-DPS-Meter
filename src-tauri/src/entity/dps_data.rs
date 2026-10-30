@@ -48,6 +48,9 @@ pub struct DpsData {
     /// `DataStorage::party_generation`: changes when the party's members do.
     #[serde(default)]
     pub party_generation: u64,
+    /// The local player or current group is known well enough to classify rows.
+    #[serde(default)]
+    pub audience_known: bool,
     /// `DataStorage::zone_generations`: every map load, and those entering
     /// or leaving an instance.
     #[serde(default)]
@@ -74,6 +77,7 @@ impl DpsData {
             target_mob_code: 0,
             dungeon_id: 0,
             party_generation: 0,
+            audience_known: false,
             zone_generation: 0,
             instance_generation: 0,
         }
