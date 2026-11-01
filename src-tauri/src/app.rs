@@ -231,7 +231,9 @@ fn hide_with_meter(app: &tauri::AppHandle, meter: bool, hidden: &mut std::collec
 fn show_with_meter(app: &tauri::AppHandle, hidden: &mut std::collections::HashSet<String>) {
     for label in hidden.drain() {
         let Some(window) = app.get_webview_window(&label) else { continue };
-        if label == crate::plugins::dock::LABEL && !crate::plugins::dock::wants_visible(app) {
+        if label == crate::plugins::dock::LABEL {
+            // Its plugins may now hide for a different reason, or have closed.
+            crate::plugins::dock::sync(app, None);
             continue;
         }
         // A widget its plugin closed meanwhile stays hidden.
@@ -4322,6 +4324,8 @@ pub fn run() {
                             show_with_meter(&handle, &mut hidden_with_meter);
                         }
 
+                        crate::plugins::dock::sync_focus_hiding(&handle);
+
                         // The plugin dock is on top only while the game or
                         // one of the meter's windows is in front: with a
                         // plugin in it that stays shown, it went on covering
@@ -4333,7 +4337,7 @@ pub fn run() {
                             let front = platform::window::front_is_ours_or_game();
                             if dock_on_top != Some(front) {
                                 if let Some(dock) = handle.get_webview_window(crate::plugins::dock::LABEL) {
-                                    let _ = dock.set_always_on_top(front);
+                                    platform::window::set_on_top_without_showing(&dock, front);
                                     dock_on_top = Some(front);
                                 }
                             }

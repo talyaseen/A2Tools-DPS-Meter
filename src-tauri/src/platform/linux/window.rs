@@ -309,6 +309,11 @@ pub fn bring_forward(window: &tauri::WebviewWindow) {
     let _ = window.set_focus();
 }
 
+/// Change stacking without changing the window's mapped/hidden state.
+pub fn set_on_top_without_showing(window: &tauri::WebviewWindow, on_top: bool) {
+    let _ = window.set_always_on_top(on_top);
+}
+
 /// Show a window on top without taking focus from the game. A plain show
 /// maps the window and the window manager activates it as a new window
 /// (KWin did, under XWayland, for each plugin alert), so GTK is told first

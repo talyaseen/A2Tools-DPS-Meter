@@ -38,14 +38,46 @@ const CLOSED_WITH_KEY: &str = "dpsMeter.pluginDockClosedWith";
 // An explicitly opened configuration dock stays usable after its alerts hide.
 // This is only this run's window state, never a saved plugin preference.
 static CONFIGURATION_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static HELD_FOR_FOCUS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub(super) fn set_configuration_open(open: bool) {
     CONFIGURATION_OPEN.store(open, std::sync::atomic::Ordering::Relaxed);
+    if !open {
+        HELD_FOR_FOCUS.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 pub(super) fn configuration_open() -> bool {
     CONFIGURATION_OPEN.load(std::sync::atomic::Ordering::Relaxed)
 }
 pub fn wants_visible(app: &tauri::AppHandle) -> bool {
     configuration_open() || !shown_members(app).is_empty()
+}
+
+/// A plugin callback must not bring the dock back over another program.
+/// Remember the withheld show even if the focus ticker never saw it up.
+pub(super) fn hold_unfocused(app: &tauri::AppHandle) -> bool {
+    if wants_visible(app) && super::hides_unfocused(app, LABEL)
+        && !crate::platform::window::front_is_ours_or_game()
+    {
+        HELD_FOR_FOCUS.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(window) = app.get_webview_window(LABEL) {
+            crate::platform::window::hide_in_place(&window);
+        }
+        return true;
+    }
+    false
+}
+
+/// Retry a withheld show when focus returns, or its hide option changes.
+pub fn sync_focus_hiding(app: &tauri::AppHandle) {
+    if !HELD_FOR_FOCUS.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    if !wants_visible(app) {
+        HELD_FOR_FOCUS.store(false, std::sync::atomic::Ordering::Relaxed);
+    } else if !hold_unfocused(app) {
+        HELD_FOR_FOCUS.store(false, std::sync::atomic::Ordering::Relaxed);
+        sync(app, None);
+    }
 }
 
 /// The plugin a call from window `label` is for. A plugin's own window is its
@@ -155,7 +187,9 @@ pub fn sync(app: &tauri::AppHandle, focus: Option<&str>) {
     }
     let up = window.is_visible().unwrap_or(false) && !crate::platform::window::is_hidden_in_place(&window);
     if visible && !up {
-        if super::window_game_hides(app, LABEL) {
+        if hold_unfocused(app) {
+            // The focus ticker restores it only while still wanted.
+        } else if super::window_game_hides(app, LABEL) {
             super::hold_for_game(&window);
         } else if !crate::platform::window::reveal_in_place(&window) {
             super::show_in_place(app, &window, PLACE_ID, || crate::platform::window::show_on_top_without_focus(&window));
@@ -211,6 +245,10 @@ fn build(app: &tauri::AppHandle, visible: bool) -> Result<(), String> {
     if app.get_webview_window(LABEL).is_some() {
         return Ok(());
     }
+    let visible = visible && wants_visible(app);
+    let held_for_focus = visible && hold_unfocused(app);
+    let held_for_game = visible && super::window_game_hides(app, LABEL);
+    let visible = visible && !held_for_focus && !held_for_game;
     let (w, h) = super::saved_size(app, PLACE_ID).unwrap_or((380.0, 520.0));
     crate::app::note_window_title(TITLE, LABEL);
     let window = crate::platform::window::share_process(tauri::WebviewWindowBuilder::new(app, LABEL, tauri::WebviewUrl::App("plugin-dock.html".into())), crate::platform::ProcessGroup::Plugins)
@@ -231,6 +269,11 @@ fn build(app: &tauri::AppHandle, visible: bool) -> Result<(), String> {
     if !visible && crate::platform::window::HIDE_AFTER_BUILD {
         crate::platform::window::hide_without_focus(&window);
     }
+    if held_for_game {
+        super::hold_for_game(&window);
+    }
+    // Building can take long enough for foreground ownership to change.
+    hold_unfocused(app);
     if let Some((x, y)) = super::saved_position(app, &window, PLACE_ID) {
         let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
     }

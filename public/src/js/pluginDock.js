@@ -61,17 +61,17 @@
     const ia = prefs.order.indexOf(a.id), ib = prefs.order.indexOf(b.id);
     return (ia < 0 ? 1e9 : ia) - (ib < 0 ? 1e9 : ib) || a.name.localeCompare(b.name);
   });
-  const shownTabs = () => ordered().filter((d) => d.shown);
 
   const setLabel = (btn, label) => {
     btn.setAttribute("aria-label", label);
     btn.title = label;
   };
 
-  // Which panels show: the open tab's, or every shown one stacked.
+  // Keep a selected configuration even when its plugin hides an alert.
+  // Selection never opens the native dock; only an explicit Open does that.
   const render = () => {
-    const shown = shownTabs();
-    if (!shown.some((d) => d.id === prefs.active)) prefs.active = shown[0]?.id ?? null;
+    const tabs = ordered();
+    if (!tabs.some((d) => d.id === prefs.active)) prefs.active = tabs[0]?.id ?? null;
     const stacked = prefs.layout === "stack";
     document.body.classList.toggle("dockStacked", stacked);
     document.body.classList.toggle("dockFolded", prefs.folded);
@@ -85,7 +85,7 @@
     });
     for (const d of ordered()) {
       const active = d.id === prefs.active;
-      d.panel.hidden = !d.shown || (!stacked && !active);
+      d.panel.hidden = stacked ? !d.shown && !active : !active;
       d.panel.classList.toggle("dockPanelAlert", !!d.alert);
       d.panel.classList.toggle("dockPanelFirst", !d.panel.hidden && first);
       if (!d.panel.hidden) first = false;
@@ -143,7 +143,7 @@
     tab.setAttribute("aria-label", d.name);
     tab.title = `${d.name} ${d.version}`;
     tab.addEventListener("click", () => {
-      invoke("plugin_open", { id: d.id }).then(() => activate(d.id))
+      invoke("plugin_open", { id: d.id }).then(() => { backTo.clear(); activate(d.id); })
         .catch((e) => showToast(String(e)));
     });
     tab.addEventListener("dragstart", (e) => {
@@ -224,8 +224,8 @@
           // plugin puts its window back. The dock keeps its size.
           onFit: (fitted) => {
             d.alert = fitted;
-            if (fitted) activate(d.id);
-            else render();
+            // dock-focus remembers the previous tab before opening the alert.
+            render();
           },
         });
         docked.set(d.id, d);
@@ -253,7 +253,11 @@
   listen("dock-return", (event) => {
     const back = backTo.get(event.payload);
     backTo.delete(event.payload);
-    if (back && docked.has(back)) activate(back);
+    // An earlier alert can finish while a newer one is still selected.
+    for (const [id, previous] of backTo) {
+      if (back && previous === event.payload) backTo.set(id, back);
+    }
+    if (prefs.active === event.payload && back && docked.has(back)) activate(back);
   });
 
   // Plugin events, each to its plugin's frame; one without a plugin to all.
