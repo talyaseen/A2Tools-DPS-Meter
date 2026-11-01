@@ -115,7 +115,8 @@ fn plugin_of_window(label: &str) -> Option<String> {
 /// The plugins a window shows: its plugin, or the dock's shown tabs.
 fn window_plugins(app: &tauri::AppHandle, label: &str) -> Vec<String> {
     if label == dock::LABEL {
-        return dock::shown_members(app);
+        let shown = dock::shown_members(app);
+        return if shown.is_empty() && dock::configuration_open() { dock::members(app) } else { shown };
     }
     plugin_of_window(label).into_iter().collect()
 }
@@ -134,7 +135,7 @@ fn all_listed(ids: &[String], list: &[String]) -> bool {
 const PLUGIN_SURFACE_COMMANDS: &[&str] = &[
     "dock_close", "dock_fold", "dock_hello", "meter_shown", "open_settings_at", "open_settings_window",
     "open_url", "plugin_abyss_siege", "plugin_boss_follow", "plugin_boss_timers", "plugin_close",
-    "plugin_fps_admin", "plugin_fps_watch", "plugin_hello", "plugin_screenshot", "plugin_set_docked", "plugin_storage_get",
+    "plugin_fps_admin", "plugin_fps_watch", "plugin_hello", "plugin_open", "plugin_screenshot", "plugin_set_docked", "plugin_storage_get",
     "plugin_storage_set", "plugin_widget_area", "plugin_widget_close", "plugin_widget_drag",
     "plugin_widget_hello", "plugin_widget_open", "plugin_widget_place", "plugin_widget_post",
     "plugin_widget_send", "plugin_widget_where", "plugin_widgets_lock", "plugin_widgets_locked",
@@ -146,6 +147,9 @@ const PLUGIN_SURFACE_COMMANDS: &[&str] = &[
 /// `PLUGIN_SURFACE_COMMANDS`.
 pub fn allowed_from(label: &str, command: &str) -> bool {
     let plugin_surface = is_plugin_window(label) || widgets::parse_label(label).is_some();
+    if plugin_surface && command == "plugin_open" {
+        return label == dock::LABEL;
+    }
     !plugin_surface || PLUGIN_SURFACE_COMMANDS.contains(&command)
 }
 
@@ -192,6 +196,9 @@ pub fn sync_game_hiding(app: &tauri::AppHandle) {
                 crate::platform::window::hide_in_place(&window);
             }
         } else if hidden.remove(&label) {
+            if label == dock::LABEL && !dock::wants_visible(app) {
+                continue;
+            }
             // Closed by its plugin meanwhile: it stays hidden.
             if widgets::is_closed(&label) {
                 continue;
@@ -1925,13 +1932,17 @@ fn open_window(app: &tauri::AppHandle, id: &str, visible: bool) -> Result<(), St
 /// Open a plugin's window.
 /// Async: on Windows, building a window from a synchronous command deadlocks.
 #[tauri::command]
-pub async fn plugin_open(app: tauri::AppHandle, id: String) -> Result<(), String> {
+pub async fn plugin_open(app: tauri::AppHandle, window: tauri::WebviewWindow, id: String) -> Result<(), String> {
+    if window.label() == dock::LABEL {
+        window_plugin(&window, Some(&id))?;
+    }
     if disabled(&app).contains(&id) {
         return Err("that plugin is turned off".into());
     }
     reopened(&app, &id);
     remember_window(&app, &id, Some("shown"));
     if dock::docks(&app, &id) {
+        dock::set_configuration_open(true);
         dock::sync(&app, Some(&id));
         return Ok(());
     }
@@ -2034,7 +2045,7 @@ pub fn plugin_window(app: tauri::AppHandle, window: tauri::WebviewWindow, plugin
                 remember_window(&app, &id, Some("hidden"));
             }
             dock::sync(&app, None);
-            if !before.dock_was_up {
+            if !before.dock_was_up && !dock::configuration_open() {
                 dock::hide_now(&app);
             }
             let _ = app.emit_to(dock::LABEL, "dock-return", id.as_str());
@@ -2693,6 +2704,15 @@ mod tests {
     }
 
     use super::{allowed_from, base64, content_policy, inline_page, inlined_policy, with_meter_fonts, prompt_texts, should_start, take_ready};
+
+    #[test]
+    fn only_the_dock_can_reopen_configuration_tabs() {
+        assert!(allowed_from(super::dock::LABEL, "plugin_open"));
+        for label in ["plugin-cooldowns", "pw_cooldowns_icon"] {
+            assert!(!allowed_from(label, "plugin_open"));
+        }
+        assert!(allowed_from("settings", "plugin_open"));
+    }
     use super::{update_prompt, updates_to_offer, within_reach, Pending, PluginAvailable, PluginInfo, LANGUAGES, SETTLE};
     use std::collections::{HashMap, HashSet};
     use std::time::{Duration, Instant};
