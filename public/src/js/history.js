@@ -258,7 +258,7 @@ const createHistoryUI = ({ onOpenFight } = {}) => {
       sortEl.replaceChildren(...[
         ["newest", t("history.sortNewest", "Newest")],
         ["fastest", t("history.sortFastest", "Fastest kill")],
-        ["partyDps", t("history.recordedDps", "Recorded DPS")],
+        ["partyDps", t("history.nearbyDps", "Nearby DPS")],
         ["myDps", t("history.sortMyDps", "Your DPS")],
       ].map(([v, label]) => option(v, label, v === sortBy)));
     }
@@ -548,7 +548,7 @@ const createHistoryUI = ({ onOpenFight } = {}) => {
 
     if (!grouped) metaEl.appendChild(timeEl);
     metaEl.appendChild(durEl);
-    // Recorded DPS, and yours with your share of the recorded damage; the
+    // Nearby DPS, and yours with your share of the recorded damage; the
     // damage alone where the fight has no length yet.
     if (Number(fight.durationMs) > 0) {
       const stat = (cls, label, value) => {
@@ -559,7 +559,7 @@ const createHistoryUI = ({ onOpenFight } = {}) => {
         el.append(`${label} `, b);
         return el;
       };
-      metaEl.appendChild(stat("historyRowParty", t("history.recordedDps", "Recorded DPS"), partyDps(fight)));
+      metaEl.appendChild(stat("historyRowParty", t("history.nearbyDps", "Nearby DPS"), partyDps(fight)));
       if (Number(fight.myDamage) > 0 && youIn(fight)) {
         const mine = stat("historyRowMine", t("history.you", "You"), myDps(fight));
         const share = Number(fight.totalDamage) > 0 ? Math.round(Number(fight.myDamage) * 100 / Number(fight.totalDamage)) : 0;
