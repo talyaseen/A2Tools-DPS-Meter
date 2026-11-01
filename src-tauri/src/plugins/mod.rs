@@ -15,6 +15,8 @@
 pub mod catalog;
 pub mod decoder;
 pub mod dock;
+pub mod network;
+pub mod network_permissions;
 pub mod fps;
 pub mod widgets;
 #[cfg(feature = "online")]
@@ -134,7 +136,7 @@ fn all_listed(ids: &[String], list: &[String]) -> bool {
 const PLUGIN_SURFACE_COMMANDS: &[&str] = &[
     "dock_close", "dock_fold", "dock_hello", "meter_shown", "open_settings_at", "open_settings_window",
     "open_url", "plugin_abyss_siege", "plugin_boss_follow", "plugin_boss_timers", "plugin_close",
-    "plugin_fps_admin", "plugin_fps_watch", "plugin_hello", "plugin_screenshot", "plugin_set_docked", "plugin_storage_get",
+    "plugin_fps_admin", "plugin_fps_watch", "plugin_hello", "plugin_http_request", "plugin_screenshot", "plugin_set_docked", "plugin_storage_get",
     "plugin_storage_set", "plugin_widget_area", "plugin_widget_close", "plugin_widget_drag",
     "plugin_widget_hello", "plugin_widget_open", "plugin_widget_place", "plugin_widget_post",
     "plugin_widget_send", "plugin_widget_where", "plugin_widgets_lock", "plugin_widgets_locked",
@@ -274,6 +276,7 @@ pub struct PluginsView {
     /// Whether this build can reach the catalog (not the offline build).
     pub online: bool,
     pub plugins: Vec<PluginInfo>,
+    pub network_permissions: std::collections::BTreeMap<String, network_permissions::Permissions>,
     /// Ids of the plugins turned off.
     pub disabled: Vec<String>,
     /// Ids of the plugins that hide while AION2 is closed.
@@ -292,6 +295,7 @@ fn view(app: &tauri::AppHandle, host: &PluginHost) -> PluginsView {
         dev_mode,
         online: cfg!(feature = "online"),
         plugins: host.list(),
+        network_permissions: network_permissions::list(app, host),
         disabled: disabled(app),
         hide_closed: hide_closed(app),
         hide_unfocused: listed(app, HIDE_UNFOCUSED_KEY),
@@ -572,6 +576,14 @@ fn load_folder(dir: &Path) -> Result<Loaded, String> {
     }
     if manifest.api_version == 0 || manifest.api_version > API_VERSION {
         return Err(format!("apiVersion {} (this meter speaks up to {API_VERSION}): update the meter", manifest.api_version));
+    }
+    if manifest.permissions.iter().filter(|p| p.starts_with("network:")).count() > 32 {
+        return Err("at most 32 network origins per plugin".into());
+    }
+    for permission in &manifest.permissions {
+        if permission.starts_with("network:") && !network::valid_permission(permission) {
+            return Err("network permissions must name an exact HTTPS origin, such as network:https://example.com".into());
+        }
     }
     if !dir.join("index.html").is_file() {
         return Err("no index.html".into());
@@ -1262,6 +1274,7 @@ struct PromptTexts {
     perm_fps: String,
     perm_death_recap: String,
     perm_screenshot: String,
+    perm_network: String,
 }
 
 /// One text of the meter's interface in its language (English failing that),
@@ -1306,6 +1319,7 @@ fn prompt_texts(data_dir: Option<&Path>, lang: &str) -> PromptTexts {
         also_asks: prompt("alsoAsks", "The new version also asks to:"),
         update_now: prompt("updateNow", "Update now?"),
         failed: prompt("failed", "Couldn't update:"),
+        perm_network: perm("permNetwork", "Connect to {origin} (can send plugin data and check subscriptions)"),
         perm_storage: perm("permStorage", "Save its own data on this computer"),
         perm_notify: perm("permNotify", "Show short messages in its window"),
         perm_window: perm("permWindow", "Show and hide its own window, without taking focus from the game"),
@@ -1322,6 +1336,7 @@ fn prompt_texts(data_dir: Option<&Path>, lang: &str) -> PromptTexts {
 #[cfg_attr(not(feature = "online"), allow(dead_code))]
 fn describe_permission(t: &PromptTexts, permission: &str) -> String {
     match permission {
+        p if p.starts_with("network:") => t.perm_network.replace("{origin}", &p[8..]),
         "storage" => t.perm_storage.clone(),
         "notify" => t.perm_notify.clone(),
         "window" => t.perm_window.clone(),
@@ -1679,6 +1694,7 @@ pub fn plugin_uninstall(app: tauri::AppHandle, id: String) -> Result<PluginsView
     catalog::remove_proof(&root, &id);
     let host = host(&app)?;
     host.reload(&app);
+    network_permissions::forget(&app, Some(&id), None)?;
     dock::sync(&app, None);
     Ok(view(&app, &host))
 }
@@ -1686,16 +1702,17 @@ pub fn plugin_uninstall(app: tauri::AppHandle, id: String) -> Result<PluginsView
 /// Stop loading a folder (its saved data stays).
 #[tauri::command]
 pub fn plugin_remove_folder(app: tauri::AppHandle, path: String) -> Result<PluginsView, String> {
+    let host = host(&app)?;
     let state = app.try_state::<AppState>().ok_or("no app state")?;
     let mut folders: Vec<String> =
         state.settings.get(DEV_FOLDERS_KEY).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
     folders.retain(|f| f != &path);
     state.settings.set(DEV_FOLDERS_KEY, &serde_json::to_string(&folders).unwrap_or_default());
-    let host = host(&app)?;
     if let Some(window) = app.get_webview_window(&format!("plugin-{}", host.list().iter().find(|p| p.path == path).map(|p| p.id.clone()).unwrap_or_default())) {
         let _ = window.close();
     }
     host.reload(&app);
+    network_permissions::forget(&app, None, Some(&path))?;
     dock::sync(&app, None);
     Ok(view(&app, &host))
 }

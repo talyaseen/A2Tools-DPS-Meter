@@ -72,6 +72,12 @@
 //                                              { type: "boss", server, boss, entry } on each change (an
 //                                              entry as a2.bossTimers gives it), or
 //                                              { type: "status", server, connected }; [] stops
+//   await a2.http.request({ url, method: "GET" })  HTTPS through the host (permission
+//                                              "network:https://api.example.com" for that exact origin).
+//                                              GET or POST; POST may include json, either may include
+//                                              an explicit bearer token. No cookies or arbitrary headers.
+//                                              Returns { status, body, contentType, fetchedAt }; body is
+//                                              text, fetchedAt unix ms. No response cache.
 //   await a2.watchFps(true)                    the game's frame rate (permission "fps", meter 2.0.78 on):
 //                                              comes about every second as a2.on("fps", (f) => ...), f
 //                                              being { fps, state }: state "ok" (fps a number), "noGame",
@@ -212,6 +218,9 @@
     // Meter 2.0.72 on: the server's Abyss siege (artifact holders, cores).
     abyssSiege: (server) => call("abyssSiege", [Number(server)]),
     followBosses: (server, bosses) => call("bossTimers.follow", [Number(server), (bosses || []).map(String)]),
+    http: Object.freeze({
+      request: (options) => call("http.request", [options]),
+    }),
     // Meter 2.0.78 on: the game's frame rate.
     watchFps: (on) => call("fps.watch", [on !== false]),
     screenshot: (rect) => call("screenshot", [rect || {}]),

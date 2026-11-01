@@ -103,6 +103,68 @@ A small `a2` object the plugin loads (`plugin://sdk/a2.js`), wrapping postMessag
 
 Everything is asynchronous; nothing blocks the meter. A plugin that floods messages is rate-limited and then paused.
 
+## Experimental origin-scoped HTTPS requests
+
+This local feature is pending upstream acceptance. A plugin can request HTTPS
+access to individually declared origins. For example, its manifest may include
+`"network:https://aion2.exchange"` and `"network:https://api.example.com"`.
+A manifest declaration alone never grants internet access. In **Settings →
+Plugins**, select **Allow internet access** and confirm the exact origins on
+the in-app card. The warning explains that the plugin can send its data to
+these websites. This separate approval applies to both catalog plugins and
+developer folders. Grants are tied to the plugin and its canonical source;
+new origins added by an update or manifest reload stay pending. Existing
+choices survive restart, and **Revoke internet access** removes that plugin's
+grants. Removal of the plugin or developer folder also removes its grants.
+The catalog install/update prompt still describes requested permissions; it
+does not replace this origin approval. The catalog validator must separately
+recognize and validate these permissions before publication.
+
+From a plugin's main page (send results to widgets through `a2.widgets.send`):
+
+```js
+const response = await a2.http.request({
+  url: "https://aion2.exchange/api/health?server=11304",
+  method: "GET",
+});
+const subscription = await a2.http.request({
+  url: "https://api.example.com/subscription/check",
+  method: "POST",
+  json: { product: "market" },
+  bearer: tokenProvidedToThisPlugin,
+});
+// Each returns { status, body, contentType, fetchedAt: unixMilliseconds }.
+// body is UTF-8 text. Check status and validate JSON before using it.
+```
+
+A permission covers an exact HTTPS origin on port 443. Other ports, subdomains
+and other origins are not included; wildcard permissions are not supported.
+Only GET and JSON POST are supported. The plugin may supply its own bearer
+token explicitly; no meter account tokens, browser cookies, system credentials
+or arbitrary request headers are attached. Bearer tokens are limited to 4096
+ASCII token characters (letters, digits and `-._~+/=`). URLs are limited to 4096
+characters and cannot contain user information or fragments. Responses are not
+cached, including subscription responses.
+
+The host independently verifies the calling plugin, that it is enabled, and
+its exact-origin permission. Public DNS addresses are validated and pinned for
+the request. Loopback, private and link-local targets and redirects are refused.
+Request JSON is limited to 64 KiB, responses to 2 MB and the whole request to
+20 seconds. The shared budget is 60 requests per minute, with at most four in
+flight overall and 20 requests per minute per plugin. Each plugin permits only
+one request in flight, and each frame permits one pending call. Busy or failed
+requests reject the promise: keep the last useful display and retry later.
+HTTP statuses, including errors, are returned only when the response has a
+supported text content type, valid UTF-8 and a body within the size limit.
+Invalid content types, bytes or oversized bodies fail the request.
+
+`fetchedAt` is the host response time, not the age of market prices. Preserve
+the provider's original quote/publication timestamps and label missing prices
+as unknown. Never interpret a network error as a valid subscription result.
+The plugin frame retains `connect-src 'none'`; direct internet and localhost
+requests remain unavailable. Offline builds reject the API. This API does not
+provide packet files, process execution, databases or a localhost bridge.
+
 ## Decoders: game data without raw packets
 
 A plugin that needs game data describes the packets and fields it wants. The meter runs the decoder; the plugin only ever receives the extracted numbers.
