@@ -122,6 +122,9 @@
       if (permission === "events:character") {
         return t("settings.plugins.permCharacter", "See your character's name, server, class and level");
       }
+      if (permission === "events:observations") {
+        return t("settings.plugins.permObservations", "See your own character's captured crafting observations and their verification status");
+      }
       if (permission === "feed:boss-timers") {
         return t("settings.plugins.permBossTimers", "Read the field boss timers players share through a2tools.app");
       }

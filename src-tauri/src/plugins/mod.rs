@@ -562,6 +562,11 @@ fn character(app: &tauri::AppHandle) -> Option<Value> {
     })
 }
 
+/// A separate permission protects captured crafting observations.
+fn observations(app: &tauri::AppHandle) -> Option<Value> {
+    app.try_state::<AppState>().map(|s| s.data_storage.character_observations())
+}
+
 /// Take the events that may go now, in order: one that doesn't settle, or
 /// has waited out `SETTLE`, unless an earlier event of its plugin is still
 /// waiting (an `immediate` soul pickup never overtakes the pet list before it).
@@ -693,6 +698,7 @@ impl PluginHost {
                 .name("plugin-events".into())
                 .spawn(move || {
                 let mut told = character(&app);
+                let mut observations_told = observations(&app);
                 let mut game = crate::platform::window_detector::find_aion2_window();
                 GAME_OPEN.store(game, std::sync::atomic::Ordering::Relaxed);
                 sync_game_hiding(&app);
@@ -734,6 +740,11 @@ impl PluginHost {
                     if now != told {
                         host.tell_character(&app, now.clone());
                         told = now;
+                    }
+                    let now_observations = observations(&app);
+                    if now_observations != observations_told {
+                        host.tell_permitted(&app, "events:observations", "observations", now_observations.clone().unwrap_or(Value::Null));
+                        observations_told = now_observations;
                     }
                     // A map the player opened: its field bosses, to plugins
                     // with feed:boss-timers at once (the shared feed lags).
@@ -1291,6 +1302,7 @@ struct PromptTexts {
     perm_window: String,
     perm_widgets: String,
     perm_character: String,
+    perm_observations: String,
     perm_decoder: String,
     perm_fps: String,
     perm_death_recap: String,
@@ -1346,6 +1358,7 @@ fn prompt_texts(data_dir: Option<&Path>, lang: &str) -> PromptTexts {
         perm_window: perm("permWindow", "Show and hide its own window, without taking focus from the game"),
         perm_widgets: perm("permWidgets", "Show small windows of its own, which you can move anywhere and lock in place"),
         perm_character: perm("permCharacter", "See your character's name, server, class and level"),
+        perm_observations: perm("permObservations", "See your own character's captured crafting observations and their verification status"),
         perm_decoder: perm("permDecoder", "Read selected game fields (may include other players): {name}"),
         perm_fps: perm("permFps", "Show the game's frame rate (on Windows, the meter asks to run as administrator for it)"),
         perm_death_recap: perm("permDeathRecap", "After a player kills you: who they were and the damage they did to you"),
@@ -1363,6 +1376,7 @@ fn describe_permission(t: &PromptTexts, permission: &str) -> String {
         "window" => t.perm_window.clone(),
         "widgets" => t.perm_widgets.clone(),
         "events:character" => t.perm_character.clone(),
+        "events:observations" => t.perm_observations.clone(),
         "fps" => t.perm_fps.clone(),
         "events:death-recap" => t.perm_death_recap.clone(),
         "screenshot" => t.perm_screenshot.clone(),
@@ -2204,6 +2218,8 @@ pub fn plugin_hello(app: tauri::AppHandle, window: tauri::WebviewWindow, plugin:
         .unwrap_or_default();
     let character =
         if manifest.permissions.iter().any(|p| p == "events:character") { character(&app) } else { None };
+    let observations =
+        if manifest.permissions.iter().any(|p| p == "events:observations") { observations(&app) } else { None };
     let reviewed = host.with(&id, |l| l.reviewed).unwrap_or(false);
     let language = app.try_state::<AppState>().and_then(|s| s.settings.get("dpsMeter.language")).unwrap_or_else(|| "en".into());
     Ok(serde_json::json!({
@@ -2211,6 +2227,7 @@ pub fn plugin_hello(app: tauri::AppHandle, window: tauri::WebviewWindow, plugin:
         "replay": replay,
         "run": host.run,
         "character": character,
+        "observations": observations,
         "language": language,
         "theme": plugin_theme(&app),
         "visible": window_shown(&app, &id),

@@ -741,6 +741,7 @@
       "networkRequestUnreviewed": "Plugin local não revisado",
       "networkDeny": "Negar",
       "permCharacter": "Ver nome, servidor, classe e nível do seu personagem",
+      "permObservations": "Ver os dados de fabricação capturados do seu próprio personagem e o estado de verificação",
       "permDecoder": "Ler dados selecionados do jogo (podem incluir outros jogadores): {name}",
       "permNone": "Nada além de mostrar sua janela",
       "enabled": "Ativado",

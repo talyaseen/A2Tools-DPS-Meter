@@ -289,6 +289,7 @@ impl CaptureDispatcher {
                     window_logged = Some(running);
                 }
                 if !running && is_aion_running {
+                    self.data_storage.clear_character_observations("AION2 closed.");
                     self.port_detector.reset();
                     self.ping_tracker.reset();
                     assemblers.clear();
@@ -321,6 +322,7 @@ impl CaptureDispatcher {
             if is_aion_running && self.port_detector.current_port().is_some() {
                 let last_parsed = self.port_detector.last_parsed_at_ms();
                 if last_parsed > 0 && now - last_parsed > STALE_CONNECTION_MS {
+                    self.data_storage.clear_character_observations("The capture connection became stale.");
                     info!("No packets parsed for {}ms, resetting lock", now - last_parsed);
                     self.port_detector.reset();
                     self.ping_tracker.reset();
@@ -363,6 +365,7 @@ impl CaptureDispatcher {
                     // The stream continues on the other device; its own
                     // connection gets a fresh assembler below.
                     self.port_detector.move_device(other);
+                    self.data_storage.clear_character_observations("The capture device changed; waiting for a fresh self profile.");
                     elsewhere.clear();
                     assemblers.clear();
                     last_on_locked_device_ms = now;
@@ -398,6 +401,7 @@ impl CaptureDispatcher {
                     }
                     if let Some((new_port, packets)) = waiting.offer(cap, now) {
                         self.port_detector.move_port(new_port);
+                        self.data_storage.clear_character_observations("The capture connection changed; waiting for a fresh self profile.");
                         assemblers.clear();
                         sig_hits.clear();
                         replay.extend(packets);
@@ -464,6 +468,10 @@ impl CaptureDispatcher {
                 (StreamAssembler::new(), proc, TcpOrder::default())
             });
 
+            // Consumer observations have a stricter origin than combat's
+            // pre-lock identification: only the locked server->client flow.
+            if !unlocked { processor.enable_character_observations(); }
+
             if unlocked {
                 self.port_detector.register_candidate(cap.src_port, key, cap.device_name.as_deref());
                 // Count this signature-bearing packet against its source port (the
@@ -521,6 +529,7 @@ impl CaptureDispatcher {
                             cap.device_name.as_deref().unwrap_or("?")
                         );
                         assembler.lose_bytes();
+                        processor.observation_gap();
                     }
                     Piece::Bytes(data) => {
                         let ordered = CapturedPayload {

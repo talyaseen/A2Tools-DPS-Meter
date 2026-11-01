@@ -741,6 +741,7 @@
       "networkRequestUnreviewed": "Ungeprüftes lokales Plugin",
       "networkDeny": "Ablehnen",
       "permCharacter": "Name, Server, Klasse und Stufe deines Charakters sehen",
+      "permObservations": "Erfasste Handwerksdaten deines eigenen Charakters und ihren Prüfstatus sehen",
       "permDecoder": "Ausgewählte Spieldaten lesen (können andere Spieler betreffen): {name}",
       "permNone": "Nichts außer sein Fenster anzuzeigen",
       "enabled": "Aktiviert",

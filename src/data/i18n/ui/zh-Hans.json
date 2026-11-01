@@ -741,6 +741,7 @@
       "networkRequestUnreviewed": "未经审核的本地插件",
       "networkDeny": "拒绝",
       "permCharacter": "查看你角色的名称、服务器、职业和等级",
+      "permObservations": "查看从你自己角色捕获的制作数据及其验证状态",
       "permDecoder": "读取选定的游戏数据（可能包含其他玩家的信息）：{name}",
       "permNone": "除显示窗口外不做其他事",
       "enabled": "启用",

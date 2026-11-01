@@ -749,6 +749,7 @@
       "networkRequestUnreviewed": "Unreviewed local plugin",
       "networkDeny": "Deny",
       "permCharacter": "See your character's name, server, class and level",
+      "permObservations": "See your own character's captured crafting observations and their verification status",
       "permDecoder": "Read selected game fields (may include other players): {name}",
       "permNone": "Nothing beyond showing its window",
       "enabled": "Enabled",

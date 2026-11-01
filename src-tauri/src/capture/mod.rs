@@ -6,6 +6,7 @@ pub mod abyss_cores;
 pub mod boss_map;
 pub mod field_bosses;
 pub mod captured_payload;
+pub mod character_observations;
 pub mod evidence_slice;
 pub mod frame_tap;
 pub mod framing;

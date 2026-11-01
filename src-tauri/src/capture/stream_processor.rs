@@ -77,6 +77,9 @@ pub struct StreamProcessor {
     pending_compact_skill_context: Option<PendingCompactSkillContext>,
     /// When set, override the timestamp on all created packets (for replay mode).
     override_timestamp: Option<i64>,
+    /// Only a locked, live capture dispatcher opts in. Replay and debug
+    /// processors never publish consumer observations.
+    observation_session: Option<u64>,
 }
 
 /// The `42 36` flag of an entity leaving the world, a spirit unsummoned among
@@ -93,11 +96,59 @@ impl StreamProcessor {
             dot_damage_skill_ids: HashSet::new(), // loaded lazily
             pending_compact_skill_context: None,
             override_timestamp: None,
+            observation_session: None,
         }
     }
 
     pub fn set_dot_skill_ids(&mut self, ids: HashSet<i32>) {
         self.dot_damage_skill_ids = ids;
+    }
+
+    pub fn enable_character_observations(&mut self) {
+        if self.observation_session.is_none() {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+            self.observation_session = Some(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+        }
+    }
+
+    pub fn observation_gap(&mut self) {
+        if self.observation_session.take().is_some() {
+            self.data_storage.clear_character_observations("Capture lost bytes; waiting for a fresh self profile.");
+            // Stay eligible on this live flow, under a fresh session. TcpOrder
+            // can return Gap then recovered Bytes in the same dispatcher turn.
+            self.enable_character_observations();
+        }
+    }
+
+    fn observe_character_packet(&self, packet: &[u8]) -> bool {
+        let Some(session) = self.observation_session else { return false };
+        self.data_storage.note_observation_packet(session);
+        let length = read_varint(packet, 0);
+        if length.length <= 0 { return false; }
+        let Some(payload) = packet.get(length.length as usize..) else { return false };
+        if !payload.starts_with(&[0x33, 0x36]) { return false; }
+        let rejected = || {
+            self.data_storage.invalidate_observation_proficiency();
+            false
+        };
+        if super::framing::frame_size(length.value, length.length) != Some(packet.len()) {
+            return rejected();
+        }
+        let records = masked_records(payload);
+        // Never borrow another embedded self record's identity or fields.
+        let selves: Vec<_> = records.iter().filter(|r| r.profile.is_some() || r.name.is_none()).collect();
+        if selves.len() != 1 { return rejected(); }
+        let record = selves[0];
+        let entity = read_varint(payload, 2);
+        if entity.value != record.id || entity.length <= 0 || record.field.start != 2 + entity.length as usize + 6 { return rejected(); }
+        let Some(name) = record.name.as_deref() else {
+            self.data_storage.clear_character_observations("The current tutorial character is unnamed.");
+            return false;
+        };
+        let Some((server, _)) = record.profile else { return rejected() };
+        let levels = crafting_proficiency(payload, record);
+        self.data_storage.note_observation_profile(session, record.id, name, server, levels);
+        true
     }
 
     /// Set an override timestamp for all packets created by this processor.
@@ -271,6 +322,8 @@ impl StreamProcessor {
         if packet.len() < 3 {
             return false;
         }
+
+        self.observe_character_packet(packet);
 
         // Plugin decoders (`crate::plugins`); nothing when none is loaded.
         crate::capture::frame_tap::frame(packet);
@@ -1103,12 +1156,21 @@ impl StreamProcessor {
     /// works when you are already loaded into a zone (where there is no login
     /// char-list and you never see your own spawn).
     fn scan_masked_identity(&self, data: &[u8]) {
+        // Embedded bundles use this scan too. Decode only a complete framed
+        // self profile; any other newly observed self layout clears levels.
+        let observation_profile = self.observe_character_packet(data);
+        let length = read_varint(data, 0);
+        let leading_self = length.length > 0
+            && data.get(length.length as usize..length.length as usize + 2) == Some(&[0x33, 0x36]);
         for record in masked_records(data) {
             let id = record.id;
             let Some(sanitized) = record.name else {
                 // A tutorial character's placeholder: still you, with no name,
                 // and on no server the record states.
                 self.data_storage.note_self_server(0);
+                if self.observation_session.is_some() {
+                    self.data_storage.clear_character_observations("The current tutorial character is unnamed.");
+                }
                 if self.data_storage.set_local_identity_from_game(id as i64, None) {
                     tracing::info!("self record: unnamed tutorial character -> entity {}", id);
                 }
@@ -1119,6 +1181,15 @@ impl StreamProcessor {
             self.data_storage
                 .append_nickname_authoritative(id, &sanitized);
             if let Some((server, job)) = record.profile {
+                if let Some(session) = self.observation_session {
+                    if observation_profile {
+                        self.data_storage.note_observation_identity(session, id, &sanitized, server);
+                    } else if !leading_self {
+                        // A rejected leading self frame must not promote one
+                        // of its malformed or ambiguous identities indirectly.
+                        self.data_storage.note_observation_profile(session, id, &sanitized, server, None);
+                    }
+                }
                 // The game's word on who you are replaces whatever name was
                 // configured. That name comes from the window title or the last
                 // session, and both go stale: the title does not change when a
@@ -3357,6 +3428,244 @@ struct MaskedRecord {
     name: Option<String>,
     /// Your server and class, in a self record.
     profile: Option<(u16, Option<JobClass>)>,
+}
+
+/// Port of the locally corroborated character-bridge proficiency decoder.
+/// Five raw slot IDs are proven; their profession-name mapping and the eight
+/// opaque bytes are not. Unseen masks or opaque fields fail closed.
+fn crafting_proficiency(payload: &[u8], record: &MaskedRecord) -> Option<[u32; 5]> {
+    let entity = read_varint(payload, 2);
+    if !payload.starts_with(&[0x33, 0x36]) || entity.length <= 0 || entity.value != record.id {
+        return None;
+    }
+    let mask = 2 + entity.length as usize;
+    if payload.get(mask..mask + 4)? != 0x28c1815fu32.to_le_bytes() || *payload.get(mask + 4)? != 0x37 {
+        return None;
+    }
+    if record.field.start != mask + 6 || record.profile?.1.is_none() { return None; }
+    let level = u32::from_le_bytes(payload.get(record.field.end + 7..record.field.end + 11)?.try_into().ok()?);
+    if !(1..=99).contains(&level) { return None; }
+    let count = record.field.end.checked_add(59)?;
+    if *payload.get(count)? != 5 { return None; }
+    let mut levels = [0; 5];
+    for (index, level) in levels.iter_mut().enumerate() {
+        let at = count + 1 + index * 13;
+        let slot = payload.get(at..at + 13)?;
+        *level = u32::from_le_bytes(slot[1..5].try_into().ok()?);
+        if slot[0] != index as u8 + 1 || !(1..=100).contains(level) || slot[5..].iter().any(|b| *b != 0) {
+            return None;
+        }
+    }
+    Some(levels)
+}
+
+#[cfg(test)]
+mod character_observation_tests {
+    use super::*;
+
+    fn varint(mut value: usize) -> Vec<u8> {
+        let mut out = vec![];
+        loop {
+            let byte = (value & 127) as u8;
+            value >>= 7;
+            out.push(byte | if value == 0 { 0 } else { 128 });
+            if value == 0 { return out; }
+        }
+    }
+
+    // Synthetic self profile: never a retained player's capture.
+    fn profile(levels: [u32; 5]) -> Vec<u8> {
+        let mut payload = vec![0x33, 0x36];
+        payload.extend(varint(3888));
+        payload.extend(0x28c1815fu32.to_le_bytes());
+        payload.extend([0x37, 6]);
+        payload.extend(b"Tester");
+        let name_end = payload.len();
+        payload.resize(name_end + 125, 0);
+        payload[name_end..name_end + 2].copy_from_slice(&1304u16.to_le_bytes());
+        payload[name_end + 2..name_end + 6].copy_from_slice(&34u32.to_le_bytes());
+        payload[name_end + 7..name_end + 11].copy_from_slice(&45u32.to_le_bytes());
+        payload[name_end + 59] = 5;
+        for (i, level) in levels.iter().enumerate() {
+            let at = name_end + 60 + i * 13;
+            payload[at] = i as u8 + 1;
+            payload[at + 1..at + 5].copy_from_slice(&level.to_le_bytes());
+        }
+        payload
+    }
+
+    fn frame(payload: &[u8]) -> Vec<u8> {
+        let mut framed = varint(payload.len() + 4);
+        framed.extend(payload);
+        framed
+    }
+
+    fn processor() -> (Arc<DataStorage>, StreamProcessor) {
+        let storage = Arc::new(DataStorage::new());
+        let processor = StreamProcessor::new(storage.clone(), Arc::new(SkillLookup::new()), Arc::new(NpcLookup::new()));
+        (storage, processor)
+    }
+
+    #[test]
+    fn observation_decoder_uses_crafting_slots_and_retains_unequal_levels() {
+        let payload = profile([100, 75, 50, 1, 98]);
+        let records = masked_records(&payload);
+        assert_eq!(crafting_proficiency(&payload, &records[0]), Some([100, 75, 50, 1, 98]));
+        let (storage, mut processor) = processor();
+        processor.enable_character_observations();
+        processor.observe_character_packet(&frame(&payload));
+        let snapshot = storage.character_observations();
+        assert_eq!(snapshot["proficiency"]["commonLevel"], serde_json::Value::Null);
+        assert_eq!(snapshot["proficiency"]["skills"][1]["level"], 75);
+        processor.scan_masked_identity(&frame(&payload));
+        assert_eq!(storage.character_observations()["proficiency"]["skills"][1]["level"], 75);
+        processor.scan_masked_identity(&payload); // unsupported unframed embedded profile
+        assert_eq!(storage.character_observations()["proficiency"]["status"], "unknown");
+    }
+
+    #[test]
+    fn observation_replay_processors_cannot_publish_and_live_unknown_layout_clears_levels() {
+        let (storage, mut processor) = processor();
+        let mut payload = profile([100; 5]);
+        processor.observe_character_packet(&frame(&payload));
+        assert_eq!(storage.character_observations()["character"], serde_json::Value::Null);
+        processor.enable_character_observations();
+        processor.observe_character_packet(&frame(&payload));
+        assert_eq!(storage.character_observations()["proficiency"]["commonLevel"], 100);
+        payload[4] ^= 2; // unseen mask
+        processor.observe_character_packet(&frame(&payload));
+        assert_eq!(storage.character_observations()["proficiency"]["status"], "unknown");
+        processor.observation_gap();
+        assert_eq!(storage.character_observations()["character"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn observation_rejects_other_players_truncation_multiple_profiles_and_opaque_fields() {
+        for kind in 0..6 {
+            let (storage, mut processor) = processor();
+            processor.enable_character_observations();
+            let mut payload = profile([100; 5]);
+            match kind {
+                0 => payload[0] = 0x45,
+                1 => { payload.pop(); },
+                2 => payload.extend(profile([100; 5])),
+                3 => payload[82] = 1, // opaque bytes of slot 1
+                4 => payload[89] = 1, // duplicate slot ID
+                _ => payload[78..82].copy_from_slice(&101u32.to_le_bytes()),
+            }
+            processor.observe_character_packet(&frame(&payload));
+            assert_eq!(storage.character_observations()["proficiency"]["status"], "unknown", "kind {kind}");
+        }
+        let (storage, mut processor) = processor();
+        processor.enable_character_observations();
+        let mut framed = frame(&profile([100; 5]));
+        framed.pop();
+        processor.observe_character_packet(&framed);
+        assert_eq!(storage.character_observations()["character"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn observation_first_recovered_profile_survives_gap_and_bytes_in_one_tcp_result() {
+        for far_reconnect in [false, true] {
+            observation_gap_recovery_trace(far_reconnect);
+        }
+    }
+
+    fn observation_gap_recovery_trace(far_reconnect: bool) {
+        use crate::capture::{stream_assembler::StreamAssembler, tcp_order::{Piece, TcpOrder}};
+        let (storage, mut processor) = processor();
+        let mut assembler = StreamAssembler::new();
+        let mut order = TcpOrder::default();
+        processor.enable_character_observations(); // dispatcher opts in once, before pieces
+        let initial = frame(&profile([100; 5]));
+        for piece in order.push(1000, &initial, 1_000) {
+            if let Piece::Bytes(bytes) = piece { assembler.process_chunk(&bytes, &mut processor); }
+        }
+        assert_eq!(storage.character_observations()["proficiency"]["commonLevel"], 100);
+        let old_session = processor.observation_session;
+        // Two whole frames give the assembler sufficient evidence to resync.
+        let mut recovered = frame(&profile([75; 5]));
+        recovered.extend(frame(&[0x7f, 0x36, 0]));
+        let pieces = if far_reconnect {
+            order.push(900_000_000, &recovered, 2_000)
+        } else {
+            let recovered_seq = 1000 + initial.len() as u32 + 7;
+            assert!(order.push(recovered_seq, &recovered, 2_000).is_empty());
+            // The same queued segment after GAP_WAIT_MS expires flushes the
+            // missing seven bytes and recovered profile in one push result.
+            order.push(recovered_seq, &recovered, 2_300)
+        };
+        assert!(matches!(pieces.as_slice(), [Piece::Gap { .. }, Piece::Bytes(_)]));
+        assert!(matches!(pieces[0], Piece::Gap { missing } if missing == if far_reconnect { 0 } else { 7 }));
+        for piece in pieces {
+            match piece {
+                Piece::Gap { .. } => {
+                    assembler.lose_bytes();
+                    processor.observation_gap();
+                    assert_eq!(storage.character_observations()["character"], serde_json::Value::Null);
+                }
+                Piece::Bytes(bytes) => { assert!(assembler.process_chunk(&bytes, &mut processor)); }
+            }
+        }
+        assert_ne!(processor.observation_session, old_session);
+        assert_eq!(storage.character_observations()["proficiency"]["commonLevel"], 75);
+        assert_eq!(storage.character_observations()["character"]["name"], "Tester");
+        let (_, mut replay) = self::processor();
+        replay.observation_gap();
+        assert_eq!(replay.observation_session, None, "gap recovery must not opt in replay processors");
+    }
+
+    #[test]
+    fn observation_rejected_leading_self_profiles_invalidate_seeded_levels() {
+        for kind in 0..6 {
+            let (storage, mut processor) = processor();
+            processor.enable_character_observations();
+            processor.consume_stream(&frame(&profile([100; 5])));
+            assert_eq!(storage.character_observations()["proficiency"]["commonLevel"], 100);
+            let accepted = storage.character_observations();
+            let mut rejected = profile([100; 5]);
+            match kind {
+                0 => rejected[8] &= !1, // mask2 has no name bit: zero validated self records
+                1 => rejected[9] = 48, // malformed name field
+                2 => rejected.truncate(16), // missing server and remaining self fields
+                3 => {
+                    let mut other = profile([75; 5]);
+                    other[2] += 1; // distinct entity with the same varint width
+                    other[10..16].copy_from_slice(b"OtherA");
+                    rejected.extend(other); // ambiguous self identities
+                }
+                _ => { rejected.pop(); }, // truncated proficiency rows in an otherwise complete frame
+            }
+            let mut rejected_frame = frame(&rejected);
+            if kind == 5 { rejected_frame.pop(); } // incomplete transport frame as well
+            processor.consume_stream(&rejected_frame);
+            let snapshot = storage.character_observations();
+            assert_eq!(snapshot["proficiency"]["status"], "unknown", "kind {kind}");
+            assert_eq!(snapshot["proficiency"]["complete"], false, "kind {kind}");
+            assert_eq!(snapshot["proficiency"]["skills"], serde_json::json!([]), "kind {kind}");
+            assert_eq!(snapshot["proficiency"]["commonLevel"], serde_json::Value::Null, "kind {kind}");
+            assert_eq!(snapshot["character"], accepted["character"], "rejected identity kind {kind}");
+            if kind < 4 || kind == 5 {
+                assert_eq!(snapshot["observedAt"], accepted["observedAt"], "rejected profile timestamp kind {kind}");
+            }
+        }
+    }
+
+    #[test]
+    fn observation_non_self_traffic_keeps_last_accepted_profile() {
+        let (storage, mut processor) = processor();
+        processor.enable_character_observations();
+        processor.consume_stream(&frame(&profile([100; 5])));
+        let previous = storage.character_observations();
+        let mut other = profile([75; 5]);
+        other[0] = 0x45;
+        processor.consume_stream(&frame(&other));
+        processor.consume_stream(&frame(&[0x7f, 0x36, 0]));
+        let current = storage.character_observations();
+        assert_eq!(current["character"], previous["character"]);
+        assert_eq!(current["proficiency"], previous["proficiency"]);
+        assert_eq!(current["sessionRevision"], previous["sessionRevision"]);
+    }
 }
 
 /// Every masked identity record in `data`:

@@ -510,6 +510,7 @@ fn push_boss_event(inner: &mut Inner, event: BossEvent) {
 
 pub struct DataStorage {
     inner: RwLock<Inner>,
+    character_observations: Mutex<crate::capture::character_observations::Observations>,
     damage_generation: AtomicI64,
     /// Wall-clock ms of the last damage record — gates the zone-change lull check.
     last_damage_ms: AtomicI64,
@@ -895,6 +896,7 @@ impl DataStorage {
                 self_combat_power: None,
             }),
             damage_generation: AtomicI64::new(0),
+            character_observations: Mutex::new(Default::default()),
             last_damage_ms: AtomicI64::new(NEVER_MS),
             last_zone_reset_ms: AtomicI64::new(NEVER_MS),
             combat_reset_requested: AtomicBool::new(false),
@@ -909,6 +911,30 @@ impl DataStorage {
     /// stack pushed out past it ends where the game ends it.
     pub fn set_abnormal_stack_limits(&self, limits: HashMap<u32, u32>) {
         self.abnormals.lock().timeline.set_stack_limits(limits);
+    }
+
+    pub fn note_observation_packet(&self, session: u64) {
+        self.character_observations.lock().packet(session, now_ms());
+    }
+
+    pub fn note_observation_profile(&self, session: u64, id: i32, name: &str, server: u16, levels: Option<[u32; 5]>) {
+        self.character_observations.lock().profile(session, (id, name.to_owned(), server), levels, now_ms());
+    }
+
+    pub fn note_observation_identity(&self, session: u64, id: i32, name: &str, server: u16) {
+        self.character_observations.lock().identity(session, (id, name.to_owned(), server), now_ms());
+    }
+
+    pub fn clear_character_observations(&self, reason: &'static str) {
+        self.character_observations.lock().clear(reason);
+    }
+
+    pub fn invalidate_observation_proficiency(&self) {
+        self.character_observations.lock().invalidate_proficiency();
+    }
+
+    pub fn character_observations(&self) -> serde_json::Value {
+        self.character_observations.lock().snapshot(now_ms())
     }
 
     /// Hand one framed packet to the buff timeline, at the current time.
@@ -1332,6 +1358,7 @@ impl DataStorage {
         );
         inner.loot_identity.stats_streak = None;
         inner.local_player_id = Some(entity_id as i64);
+        self.clear_character_observations("Own-stats records changed the local entity; waiting for its self profile.");
         inner.loot_identity.local_from_scope = true;
         inner.loot_identity.local_from_stats = true;
         inner.loot_identity.applied = false;

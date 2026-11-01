@@ -45,6 +45,11 @@
 //                                              in the fight, your party never) }, null where the game
 //                                              did not say. Once each, kept like a decoder's events
 //   a2.on("game", ({ running }) => ...)        whether AION2 is open, at start and on change
+//   a2.on("observations", (value) => ...)      bounded local crafting observations (permission
+//                                              "events:observations"); feature-detect schema
+//                                              "a2-character-observation/v1". See
+//                                              docs/character-observations.md; unknown fields
+//                                              are never balances, inventory or assumed levels.
 //                                              (meter 2.0.65 on)
 //   a2.on("ping", ({ ms }) => ...)             the ping to the game server in ms (null while not known),
 //                                              at start and on change, about every 10 s (meter 2.0.73 on)

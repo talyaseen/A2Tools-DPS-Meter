@@ -741,6 +741,7 @@
       "networkRequestUnreviewed": "未審査のローカルプラグイン",
       "networkDeny": "拒否",
       "permCharacter": "キャラクターの名前・サーバー・クラス・レベルを見る",
+      "permObservations": "自分のキャラクターから取得した製作データとその検証状態を見る",
       "permDecoder": "選択したゲームデータを読む（他のプレイヤーの情報を含む場合があります）: {name}",
       "permNone": "ウィンドウを表示する以外のことはしません",
       "enabled": "有効",

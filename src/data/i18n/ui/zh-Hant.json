@@ -741,6 +741,7 @@
       "networkRequestUnreviewed": "未經審核的本機外掛程式",
       "networkDeny": "拒絕",
       "permCharacter": "查看你角色的名稱、伺服器、職業和等級",
+      "permObservations": "查看從你自己角色擷取的製作資料及其驗證狀態",
       "permDecoder": "讀取選定的遊戲資料（可能包含其他玩家的資訊）：{name}",
       "permNone": "除顯示視窗外不做其他事",
       "enabled": "啟用",

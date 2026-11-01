@@ -98,6 +98,7 @@
     const deliver = (event, data, extra = {}) => {
       if (event.startsWith("decoded:") && !allowed(`decoder:${event.slice(8)}`)) return;
       if (event === "character" && !allowed("events:character")) return;
+      if (event === "observations" && !allowed("events:observations")) return;
       if ((event === "bossMap" || event === "bossLive" || event === "abyss") && !allowed("feed:boss-timers")) return;
       if (event === "deathRecap" && !allowed("events:death-recap")) return;
       const msg = { event, data, ...extra };
@@ -275,6 +276,7 @@
     const startState = (hello) => {
       const out = [["language", hello.language || "en"], ["theme", hello.theme], ["compact", compact]];
       if (hello.character && allowed("events:character")) out.push(["character", hello.character]);
+      if (hello.observations && allowed("events:observations")) out.push(["observations", hello.observations]);
       if (typeof hello.game === "boolean") out.push(["game", { running: hello.game }]);
       // Its window (or dock tab) shown or hidden (meter 2.0.77 on).
       if (typeof hello.visible === "boolean") out.push(["visible", hello.visible]);

@@ -741,6 +741,7 @@
       "networkRequestUnreviewed": "검토되지 않은 로컬 플러그인",
       "networkDeny": "거부",
       "permCharacter": "캐릭터의 이름, 서버, 클래스, 레벨 보기",
+      "permObservations": "내 캐릭터에서 캡처한 제작 정보와 검증 상태 보기",
       "permDecoder": "선택한 게임 데이터 읽기 (다른 플레이어 정보가 포함될 수 있음): {name}",
       "permNone": "창을 표시하는 것 외에는 없음",
       "enabled": "사용",
