@@ -126,6 +126,9 @@
       if (permission === "feed:boss-timers") {
         return t("settings.plugins.permBossTimers", "Read the field boss timers players share through a2tools.app");
       }
+      if (permission.startsWith("network:")) {
+        return t("settings.plugins.permNetwork", "Connect to {origin} (can send plugin data and check subscriptions)", { origin: permission.slice(8) });
+      }
       if (permission === "fps") {
         return t("settings.plugins.permFps", "Show the game's frame rate (on Windows, the meter asks to run as administrator for it)");
       }
@@ -144,6 +147,8 @@
     // Ask before installing, listing what the plugin may do. Resolves true to go ahead.
     const ask = ({ title, intro, permissions, confirm }) =>
       new Promise((resolve) => {
+        // A second action must not replace the permissions awaiting approval.
+        if (!consent.hidden) return resolve(false);
         consent.querySelector(".hotkeyConsentTitle").textContent = title;
         consent.querySelector(".pluginConsentIntro").textContent = intro;
         const items = permissions.length
@@ -542,6 +547,23 @@
           controls.push(iconButton("app-window", t("settings.plugins.open", "Open"), () => invoke("plugin_open", { id: p.id }).catch((e) => say(String(e)))));
         }
         if (!p.error) controls.push(enabledSwitch(p, on));
+        const network = view.networkPermissions?.[p.id];
+        if (!p.error && network?.pending?.length) {
+          controls.push(button(t("settings.plugins.networkAllow", "Allow internet access"), async () => {
+            if (!consent.hidden) return;
+            // Bind approval to exactly the source and origins this card shows.
+            const id = p.id, source = network.source, permissions = [...network.pending];
+            const ok = await ask({
+              title: t("settings.plugins.networkConsentTitle", "Internet access for {name}", { name: p.name }),
+              intro: t("settings.plugins.networkConsentIntro", "Allow this plugin to contact these websites? It can send its data to them."),
+              permissions,
+              confirm: t("settings.plugins.networkConfirm", "Allow"),
+            });
+            if (!ok) return;
+            say("");
+            return run(invoke("plugin_approve_network", { id, source, permissions }));
+          }, "pluginNetworkAllowBtn"));
+        }
 
         // Its details: the whole description, when it hides, what it may
         // do, and Remove.
@@ -573,9 +595,18 @@
             !(view.ownWindow || []).includes(p.id),
             (docked) => run(invoke("plugin_set_docked", { id: p.id, docked }).then(() => invoke("plugin_list"))),
           ));
-          details.push(options, permissionList(p.permissions || [], true));
+          // A declaration alone cannot grant internet access.
+          const permissions = (p.permissions || []).filter((permission) =>
+            !permission.startsWith("network:") || network?.approved?.includes(permission));
+          details.push(options, permissionList(permissions, true));
         }
         const actions = el("div", "pluginDetailActions");
+        if (!p.error && network?.approved?.length) {
+          actions.append(button(t("settings.plugins.networkRevoke", "Revoke internet access"), () => {
+            say("");
+            return run(invoke("plugin_revoke_network", { id: p.id, source: network.source }));
+          }, "pluginNetworkRevokeBtn"));
+        }
         actions.append(button(t("settings.plugins.remove", "Remove"), () => {
           say("");
           if (p.reviewed) run(invoke("plugin_uninstall", { id: p.id })).then(loadCatalog);

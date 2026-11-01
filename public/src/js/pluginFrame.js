@@ -25,6 +25,39 @@
 
     const allowed = (permission) => !!manifest?.permissions?.includes(permission);
     const send = (msg) => frame?.contentWindow?.postMessage({ a2: 1, ...msg }, "*");
+    let httpPending = false;
+    const httpRequest = async (options) => {
+      if (!options || typeof options !== "object" || Array.isArray(options)) throw new Error("not an HTTP request");
+      if (Object.keys(options).some((key) => !["url", "method", "json", "bearer"].includes(key))) throw new Error("unsupported HTTP request option");
+      if (typeof options.url !== "string" || options.url.length > 4096) throw new Error("invalid HTTPS URL or URL exceeds 4096 characters");
+      const url = new URL(options.url);
+      if (url.protocol !== "https:" || url.username || url.password || options.url.includes("#")) throw new Error("only HTTPS URLs without credentials or fragments");
+      if (url.port) throw new Error("only HTTPS port 443 is supported");
+      if (url.href.length > 4096) throw new Error("HTTPS URL exceeds 4096 characters");
+      if (!allowed(`network:${url.origin}`)) throw new Error(`the plugin lacks the "network:${url.origin}" permission`);
+      const method = options.method ?? "GET";
+      if (method !== "GET" && method !== "POST") throw new Error("only GET or JSON POST requests");
+      const request = { url: url.href, method };
+      if (Object.prototype.hasOwnProperty.call(options, "json")) {
+        if (method !== "POST") throw new Error("JSON body requires POST");
+        let body;
+        try { body = JSON.stringify(options.json); }
+        catch { throw new Error("JSON body is not serializable"); }
+        if (typeof body !== "string") throw new Error("JSON body is not serializable");
+        if (new TextEncoder().encode(body).byteLength > 65536) throw new Error("JSON body exceeds 64 KiB");
+        // Keep the IPC payload as bounded JSON text; the backend validates it
+        // after checking its byte length, before parsing a nested value.
+        request.json = body;
+      }
+      if (Object.prototype.hasOwnProperty.call(options, "bearer")) {
+        if (typeof options.bearer !== "string" || !options.bearer || options.bearer.length > 4096 || /[^A-Za-z0-9._~+\/=\-]/.test(options.bearer)) throw new Error("invalid bearer token");
+        request.bearer = options.bearer;
+      }
+      if (httpPending) throw new Error("an HTTP request is already in progress");
+      httpPending = true;
+      try { return await call("plugin_http_request", { request }); }
+      finally { httpPending = false; }
+    };
 
     // Decoded events are numbered for the meter's run. The page remembers the
     // last one it handed the plugin, so a window opened again (or reloaded)
@@ -89,6 +122,7 @@
         if (!allowed("feed:boss-timers")) throw new Error('the plugin lacks the "feed:boss-timers" permission');
         return call("plugin_boss_follow", { server: Number(server), bosses: (Array.isArray(bosses) ? bosses : []).map(String) });
       },
+      "http.request": ([options]) => httpRequest(options),
       // The game's frame rate (meter 2.0.78): "fps" events while asked.
       "fps.watch": ([on]) => {
         if (!allowed("fps")) throw new Error('the plugin lacks the "fps" permission');
