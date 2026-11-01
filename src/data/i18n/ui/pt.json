@@ -807,6 +807,7 @@
     "waitingBoss": "Sem chefe"
   },
   "meter": {
+    "jitterTip": "Jitter: {value} ms. Média das diferenças absolutas entre pings consecutivos das últimas 10 amostras (aproximadamente a cada 10 segundos).",
     "identifyingPlayer": "#{id}",
     "a2toolsUser": "Usa o A2Tools",
     "dpsSuffix": "/s",

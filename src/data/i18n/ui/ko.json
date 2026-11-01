@@ -807,6 +807,7 @@
     "waitingBoss": "보스 대기 중"
   },
   "meter": {
+    "jitterTip": "지터: {value}ms. 최근 10개 핑 표본에서 연속 측정값 차이의 절댓값을 평균한 값입니다. 표본 간격은 약 10초입니다.",
     "identifyingPlayer": "#{id}",
     "a2toolsUser": "A2Tools 사용",
     "dpsSuffix": "/초",

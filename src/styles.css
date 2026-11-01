@@ -3569,6 +3569,13 @@ body.noDeaths .list .item .deathCount { display: none !important; }
   height: 13px;
   flex-shrink: 0;
 }
+.pingDisplay .pingJitter {
+  font-size: 9px;
+  letter-spacing: 0;
+  color: var(--text-color);
+  opacity: 0.75;
+  pointer-events: auto;
+}
 .pingDisplay.ping-good {
   color: #5fcaff;
 }

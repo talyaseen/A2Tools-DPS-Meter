@@ -807,6 +807,7 @@
     "waitingBoss": "ボス待機中"
   },
   "meter": {
+    "jitterTip": "ジッター: {value}ms。直近10回のpingで、連続する測定値の差の絶対値を平均した値です。測定間隔は約10秒です。",
     "identifyingPlayer": "#{id}",
     "a2toolsUser": "A2Toolsを使用中",
     "dpsSuffix": "/s",

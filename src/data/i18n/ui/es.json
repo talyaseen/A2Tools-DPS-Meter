@@ -807,6 +807,7 @@
     "waitingBoss": "Sin jefe aún"
   },
   "meter": {
+    "jitterTip": "Jitter: {value} ms. Promedio de las diferencias absolutas entre pings consecutivos de las últimas 10 muestras (aproximadamente cada 10 segundos).",
     "identifyingPlayer": "#{id}",
     "a2toolsUser": "Usa A2Tools",
     "dpsSuffix": "/s",

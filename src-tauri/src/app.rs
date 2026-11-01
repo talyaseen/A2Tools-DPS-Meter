@@ -4132,6 +4132,7 @@ pub fn run() {
                 let mut tick_count: u64 = 0;
                 let mut hide_delay: u64 = 0; // ticks to wait before hiding
                 let mut last_ping: Option<u64> = None;
+                let mut last_jitter: Option<f64> = None;
                 // The meter hidden because AION2 is closed (Settings).
                 let mut hidden_closed = false;
                 // Hide while AION2 is closed or while solo, as last checked.
@@ -4162,6 +4163,14 @@ pub fn run() {
                                 last_ping = Some(ping as u64);
                                 let _ = handle.emit("ping-update", ping);
                             }
+                        }
+
+                        // Calculated from accepted RTT samples, not these UI refreshes.
+                        // Send None after a reset so an old value does not linger.
+                        let jitter = state.ping_tracker.current_jitter_ms();
+                        if jitter != last_jitter || tick_count % 4 == 0 {
+                            last_jitter = jitter;
+                            let _ = handle.emit("jitter-update", jitter);
                         }
 
                         // Odyle energy: sent when it changes, and every 2 s

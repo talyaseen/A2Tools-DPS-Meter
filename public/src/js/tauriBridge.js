@@ -163,6 +163,7 @@
   let settingsLoaded = false;
   let cachedDpsJson = null;      // latest DPS snapshot as JSON string
   let cachedPing = null;
+  let cachedJitter = null;
   let cachedCaptureStatus = null;
   let cachedDetailsContext = null;
   let cachedAppVersion = "";     // populated on startup from Tauri backend
@@ -297,6 +298,11 @@
     cachedPing = event.payload;
     // Push directly to the app instance for immediate display update
     window._dpsApp?.updatePing?.(event.payload);
+  });
+
+  if (viewMode !== "settings") listen("jitter-update", (event) => {
+    cachedJitter = event.payload;
+    window._dpsApp?.updatePing?.();
   });
 
   listen("capture-status-changed", (event) => {
@@ -696,6 +702,9 @@
     // --- Ping ---
     getPingMs() {
       return cachedPing;
+    },
+    getJitterMs() {
+      return cachedJitter;
     },
 
     // --- Connection Info ---

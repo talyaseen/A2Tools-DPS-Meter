@@ -807,6 +807,7 @@
     "waitingBoss": "等待首领"
   },
   "meter": {
+    "jitterTip": "抖动：{value} 毫秒。最近10次ping测量中，相邻测量值差异的绝对值平均数（测量间隔约10秒）。",
     "identifyingPlayer": "#{id}",
     "a2toolsUser": "使用 A2Tools",
     "dpsSuffix": "/秒",

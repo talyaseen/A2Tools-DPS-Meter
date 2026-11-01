@@ -807,6 +807,7 @@
     "waitingBoss": "Pas de boss"
   },
   "meter": {
+    "jitterTip": "Gigue : {value} ms. Moyenne des écarts absolus entre pings consécutifs, sur les 10 dernières mesures (espacées d’environ 10 secondes).",
     "identifyingPlayer": "#{id}",
     "a2toolsUser": "Utilise A2Tools",
     "dpsSuffix": "/s",

@@ -807,6 +807,7 @@
     "waitingBoss": "No boss yet"
   },
   "meter": {
+    "jitterTip": "Jitter: {value} ms. Average absolute change between consecutive pings, using the last 10 samples (about 10 seconds apart).",
     "identifyingPlayer": "#{id}",
     "a2toolsUser": "Uses A2Tools",
     "dpsSuffix": "/s",
