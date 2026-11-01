@@ -23,6 +23,11 @@ pub fn bring_forward(window: &tauri::WebviewWindow) {
     let _ = window.set_focus();
 }
 
+/// Change stacking without changing visibility.
+pub fn set_on_top_without_showing(window: &tauri::WebviewWindow, on_top: bool) {
+    let _ = window.set_always_on_top(on_top);
+}
+
 /// Hide a window `show_on_top_without_focus` shows (see the Windows one).
 pub fn hide_without_focus(window: &tauri::WebviewWindow) {
     let _ = window.hide();

@@ -196,7 +196,7 @@ pub fn sync_game_hiding(app: &tauri::AppHandle) {
                 crate::platform::window::hide_in_place(&window);
             }
         } else if hidden.remove(&label) {
-            if label == dock::LABEL && !dock::wants_visible(app) {
+            if label == dock::LABEL && (!dock::wants_visible(app) || dock::hold_unfocused(app)) {
                 continue;
             }
             // Closed by its plugin meanwhile: it stays hidden.

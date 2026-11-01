@@ -65,6 +65,23 @@ pub fn show_on_top_without_focus(window: &tauri::WebviewWindow) {
     }
 }
 
+/// Change the dock's stacking without showing it. tao reapplies its cached
+/// visible style on a topmost change, undoing our raw focus-hide.
+pub fn set_on_top_without_showing(window: &tauri::WebviewWindow, on_top: bool) {
+    let Some(hwnd) = hwnd_of(window) else { return };
+    let _ = set_on_top(hwnd, on_top);
+}
+
+fn set_on_top(hwnd: HWND, on_top: bool) -> windows::core::Result<()> {
+    unsafe {
+        SetWindowPos(
+            hwnd, Some(if on_top { HWND_TOPMOST } else { HWND_NOTOPMOST }),
+            0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        )
+    }
+}
+
 /// Hide a window that `show_on_top_without_focus` shows, the same way: Tauri's
 /// own show and hide go through tao, which keeps a visible flag of its own.
 /// A raw show leaves that flag "hidden", so a tao hide after it changed
@@ -415,3 +432,41 @@ pub fn share_process<'a, R: tauri::Runtime, M: tauri::Manager<R>>(
 
 /// Linux only (see the Linux version).
 pub fn joined(_window: &tauri::WebviewWindow, _group: crate::platform::ProcessGroup) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::core::w;
+
+    #[test]
+    fn changing_a_hidden_windows_stacking_does_not_show_or_activate_it() {
+        // A private native window only: no WebView, settings, or running app.
+        let hwnd = unsafe {
+            CreateWindowExW(
+                WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
+                w!("STATIC"), w!("A2Tools stacking regression"), WS_POPUP,
+                -32000, -32000, 1, 1,
+                None, None, None, None,
+            )
+        }.unwrap();
+        struct TestWindow(HWND);
+        impl Drop for TestWindow {
+            fn drop(&mut self) { unsafe { let _ = DestroyWindow(self.0); } }
+        }
+        let _window = TestWindow(hwnd);
+        let foreground = unsafe { GetForegroundWindow() };
+        // As the dock is built: initially topmost, shown without focus to
+        // acquire its frameless style, then hidden through the native API.
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            let _ = ShowWindow(hwnd, SW_HIDE);
+        }
+        for on_top in [false, true, false, true, false] {
+            set_on_top(hwnd, on_top).unwrap();
+            assert!(!unsafe { IsWindowVisible(hwnd) }.as_bool());
+            assert_eq!(unsafe { GetForegroundWindow() }, foreground);
+            let topmost = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } & WS_EX_TOPMOST.0 as isize != 0;
+            assert_eq!(topmost, on_top);
+        }
+    }
+}
