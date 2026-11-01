@@ -7,8 +7,7 @@
   if (!invoke) return;
   const t = (key, fallback, vars = {}) => {
     let text = window.i18n?.t?.(key, fallback) ?? fallback;
-    for (const [name, value] of Object.entries(vars)) text = text.replace(`{${name}}`, value);
-    return text;
+    return text.replace(/\{(\w+)\}/g, (match, key) => Object.hasOwn(vars, key) ? String(vars[key]) : match);
   };
 
   // Update plugins automatically (src-tauri/src/plugins AUTO_UPDATE_KEY):
@@ -144,28 +143,54 @@
       return permission;
     };
 
-    // Ask before installing, listing what the plugin may do. Resolves true to go ahead.
-    const ask = ({ title, intro, permissions, confirm }) =>
+    let onConsentClosed = () => {};
+    // The optional cancellation handle belongs only to this card. A native
+    // request expiring must never dismiss an unrelated install confirmation.
+    const ask = ({ title, intro, permissions, confirm, details = [], denyFirst = false, cancel = null }) =>
       new Promise((resolve) => {
         // A second action must not replace the permissions awaiting approval.
         if (!consent.hidden) return resolve(false);
         consent.querySelector(".hotkeyConsentTitle").textContent = title;
         consent.querySelector(".pluginConsentIntro").textContent = intro;
-        const items = permissions.length
+        const items = [...details, ...(permissions.length
           ? permissions.map(describe)
-          : [t("settings.plugins.permNone", "Nothing beyond showing its window")];
+          : [t("settings.plugins.permNone", "Nothing beyond showing its window")])];
         consent.querySelector(".pluginConsentList").replaceChildren(
           ...items.map((text) => Object.assign(document.createElement("li"), { textContent: text })),
         );
         const yes = consent.querySelector(".pluginConsentConfirm");
         const no = consent.querySelector(".pluginConsentCancel");
         yes.textContent = confirm;
+        const previousNo = no.textContent;
+        const note = consent.querySelector(".pluginConsentNote");
+        const previousNoteHidden = note?.hidden;
+        const card = consent.querySelector(".hotkeyConsentCard");
+        const previousCardStyle = card?.getAttribute("style");
+        if (denyFirst) {
+          no.textContent = t("settings.plugins.networkDeny", "Deny");
+          if (note) note.hidden = true;
+          // Long origin/source names must not push the actions off-screen.
+          if (card) Object.assign(card.style, { overflowWrap: "anywhere", maxHeight: "85vh", overflowY: "auto" });
+        }
+        let settled = false;
         const done = (answer) => {
+          if (settled) return;
+          settled = true;
           consent.hidden = true;
           yes.removeEventListener("click", onYes);
           no.removeEventListener("click", onNo);
           consent.removeEventListener("keydown", onKey);
+          no.textContent = previousNo;
+          if (denyFirst) {
+            if (note) note.hidden = previousNoteHidden;
+            if (card) {
+              if (previousCardStyle == null) card.removeAttribute("style");
+              else card.setAttribute("style", previousCardStyle);
+            }
+          }
+          if (cancel) cancel.close = null;
           resolve(answer);
+          onConsentClosed();
         };
         const onYes = () => done(true);
         const onNo = () => done(false);
@@ -173,8 +198,9 @@
         yes.addEventListener("click", onYes);
         no.addEventListener("click", onNo);
         consent.addEventListener("keydown", onKey);
+        if (cancel) cancel.close = () => done(false);
         consent.hidden = false;
-        yes.focus();
+        (denyFirst ? no : yes).focus();
       });
 
     const button = (label, onClick, extra = "") => {
@@ -632,6 +658,75 @@
       window.lucide?.createIcons?.({ root: list });
       refreshBar();
     };
+
+    // The event is only a wake-up: prompt identity and origin come from the
+    // Settings-only native query. Ignore late queries after a newer event.
+    let promptQuery = 0;
+    let activeNetworkPrompt = null;
+    const closeNetworkPrompt = () => {
+      const previous = activeNetworkPrompt;
+      activeNetworkPrompt = null;
+      previous?.cancel.close?.();
+    };
+    const queryNetworkPrompt = async () => {
+      const query = ++promptQuery;
+      let prompt;
+      try { prompt = await invoke("plugin_network_prompt"); }
+      catch {
+        if (query === promptQuery) closeNetworkPrompt();
+        return; // Older hosts do not implement this optional API.
+      }
+      if (query !== promptQuery) return;
+      if (document.hidden || !prompt || !["token", "id", "name", "version", "folder", "origin"].every((key) => typeof prompt[key] === "string" && prompt[key]) || typeof prompt.reviewed !== "boolean") {
+        closeNetworkPrompt();
+        return;
+      }
+      if (activeNetworkPrompt?.token === prompt.token) return;
+      closeNetworkPrompt();
+      // Preserve an install/update or manual bulk-approval card. Its close
+      // handler queries again, so a still-live request can then be displayed.
+      if (!consent.hidden) return;
+      const pending = { token: prompt.token, cancel: {} };
+      activeNetworkPrompt = pending;
+      document.querySelector('.settingsNavItem[data-section="plugins"]')?.click();
+      const allow = await ask({
+        title: t("settings.plugins.networkConsentTitle", "Internet access for {name}", { name: prompt.name }),
+        intro: t("settings.plugins.networkRequestIntro", "This plugin requests access to one website. It can send its data there."),
+        details: [
+          t("settings.plugins.networkRequestIdentity", "Plugin: {name} ({id}), version {version}", prompt),
+          t("settings.plugins.networkRequestSource", "Source folder: {folder}", prompt),
+          prompt.reviewed
+            ? t("settings.plugins.networkRequestReviewed", "Reviewed catalog plugin")
+            : t("settings.plugins.networkRequestUnreviewed", "Unreviewed local plugin"),
+        ],
+        permissions: ["network:" + prompt.origin],
+        confirm: t("settings.plugins.networkConfirm", "Allow"),
+        denyFirst: true,
+        cancel: pending.cancel,
+      });
+      if (activeNetworkPrompt !== pending) return; // Native cancellation won.
+      try {
+        await invoke("plugin_answer_network_prompt", { token: pending.token, allow });
+        invoke("plugin_list").then(render).catch(() => {});
+      } catch (e) {
+        say(String(e));
+      } finally {
+        if (activeNetworkPrompt === pending) activeNetworkPrompt = null;
+      }
+    };
+    onConsentClosed = () => { if (!activeNetworkPrompt) Promise.resolve().then(queryNetworkPrompt); };
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) {
+        ++promptQuery;
+        closeNetworkPrompt();
+      } else {
+        queryNetworkPrompt();
+      }
+    });
+    // Subscribe before querying so a request queued during Settings creation
+    // is not lost. The initial query also covers an already-pending request.
+    const promptEvents = window.__TAURI__?.window?.getCurrentWindow?.().listen("plugin-network-prompt", queryNetworkPrompt);
+    Promise.resolve(promptEvents).then(queryNetworkPrompt, queryNetworkPrompt).catch(() => {});
 
     // The list comes with whether developer mode is on.
     invoke("plugin_list").then((v) => { render(v); loadCatalog(); }).catch(() => {});

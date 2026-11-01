@@ -1,5 +1,7 @@
 //! Every plugin needs an explicit host-owned grant for each HTTPS origin.
 //! A manifest edit alone must not silently widen an already running plugin.
+pub mod consent;
+
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
@@ -160,6 +162,7 @@ pub async fn plugin_approve_network(app: tauri::AppHandle, window: tauri::Webvie
 pub async fn plugin_revoke_network(app: tauri::AppHandle, window: tauri::WebviewWindow,
     id: String, source: String) -> Result<PluginsView, String> {
     settings_window(&window)?;
+    consent::cancel(&app, Some(&id), None, false);
     tauri::async_runtime::spawn_blocking(move || {
     let host = host(&app)?;
     mutation(|| {
@@ -167,7 +170,9 @@ pub async fn plugin_revoke_network(app: tauri::AppHandle, window: tauri::Webview
         if current != source { return Err("plugin source changed; review it again".into()); }
         let mut grants = read_grants(&app);
         grants.remove(&source);
-        save(&app, &grants)
+        save(&app, &grants)?;
+        consent::rearm(&source);
+        Ok(())
     })?;
     Ok(view(&app, &host))
     }).await.map_err(|_| "plugin network revocation task failed".to_string())?
@@ -183,6 +188,7 @@ fn remove(grants: &mut Grants, id: Option<&str>, folder: Option<&str>) {
 /// Called after unloading. Registration-path metadata also revokes a removed
 /// developer folder whose directory or manifest is missing.
 pub(super) fn forget(app: &tauri::AppHandle, id: Option<&str>, folder: Option<&str>) -> Result<(), String> {
+    consent::cancel(app, id, None, false);
     mutation(|| {
         let mut grants = read_grants(app);
         let before = grants.len();

@@ -2,6 +2,27 @@
 //! requests cross the same authenticated host boundary as other plugin APIs.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::net::IpAddr;
+
+pub(super) fn public_address(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            let [a,b,c,_] = ip.octets();
+            !(a == 0 || a == 10 || a == 127 || a >= 224 ||
+              (a == 100 && (64..128).contains(&b)) ||
+              (a == 169 && b == 254) || (a == 172 && (16..32).contains(&b)) ||
+              (a == 192 && (b == 168 || (b == 0 && (c == 0 || c == 2)) || (b == 88 && c == 99))) ||
+              (a == 198 && (b == 18 || b == 19 || (b == 51 && c == 100))) ||
+              (a == 203 && b == 0 && c == 113))
+        }
+        IpAddr::V6(ip) => {
+            let s = ip.segments();
+            (s[0] & 0xe000) == 0x2000 &&
+            !(s[0] == 0x2001 && (s[1] < 0x0200 || s[1] == 0x0db8)) &&
+            s[0] != 0x2002 && !(s[0] == 0x3fff && s[1] < 0x1000)
+        }
+    }
+}
 
 const MAX_REQUEST: usize = 65_536;
 const MAX_TOKEN: usize = 4096;
@@ -117,7 +138,7 @@ pub async fn plugin_http_request(
 
 #[cfg(feature = "online")]
 mod online {
-    use super::{Checked, Reply};
+    use super::{Checked, Reply, public_address};
     use std::collections::{HashSet, VecDeque};
     use std::net::{IpAddr, SocketAddr};
     use std::sync::{Mutex, OnceLock};
@@ -194,26 +215,6 @@ mod online {
 
     // Only globally routable unicast destinations. Mapped/transition IPv6 and
     // special-use ranges cannot smuggle a local address into the pinned set.
-    fn public_address(ip: IpAddr) -> bool {
-        match ip {
-            IpAddr::V4(ip) => {
-                let [a,b,c,_] = ip.octets();
-                !(a == 0 || a == 10 || a == 127 || a >= 224 ||
-                  (a == 100 && (64..128).contains(&b)) ||
-                  (a == 169 && b == 254) || (a == 172 && (16..32).contains(&b)) ||
-                  (a == 192 && (b == 168 || (b == 0 && (c == 0 || c == 2)) || (b == 88 && c == 99))) ||
-                  (a == 198 && (b == 18 || b == 19 || (b == 51 && c == 100))) ||
-                  (a == 203 && b == 0 && c == 113))
-            }
-            IpAddr::V6(ip) => {
-                let s = ip.segments();
-                (s[0] & 0xe000) == 0x2000 &&
-                !(s[0] == 0x2001 && (s[1] < 0x0200 || s[1] == 0x0db8)) &&
-                s[0] != 0x2002 && !(s[0] == 0x3fff && s[1] < 0x1000)
-            }
-        }
-    }
-
     fn checked_addresses(addresses: Vec<SocketAddr>) -> Result<Vec<SocketAddr>, String> {
         if addresses.is_empty() || addresses.len() > 32 || addresses.iter().any(|a| a.port() != 443 || !public_address(a.ip())) {
             return Err("HTTPS destination resolved to an unsupported address".into());

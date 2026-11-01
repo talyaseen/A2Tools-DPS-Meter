@@ -134,10 +134,14 @@
       } catch {}
     });
 
-    // WebView2 tool windows must load visible. Linux Settings instead reveals
-    // directly from notifyUiReady, after preparing the form; a hidden webview
-    // need not run animation frames, so its reveal must not wait for one.
+    // Settings always asks native code to reveal it: a plugin's pending
+    // consent may have been cancelled, or the user may have switched apps.
+    // Linux still waits for notifyUiReady below, without animation frames.
     const reveal = () => {
+      if (viewMode === "settings") {
+        invoke("tool_window_ready", { label: "settings" }).catch((e) => console.error("[A2Tools] reveal failed", e));
+        return;
+      }
       try {
         const w = window.__TAURI__.window.getCurrentWindow();
         w.show();
@@ -552,7 +556,8 @@
     toolWindowReady(label) {
       // Linux Settings loads hidden; notifyUiReady reveals it once the form is ready.
       if (loadsHidden && label === "settings") return Promise.resolve();
-      // Reveal from the window's own webview thread. Calling show() on the Rust
+      if (label === "settings") return invoke("tool_window_ready", { label: "settings" }).catch(() => {});
+      // Reveal other tool windows from their own webview thread. Calling show() on the Rust
       // side from a spawned task did not take effect — the window stayed created
       // but unmapped — so the window shows itself and the backend call is only
       // a fallback for focus.

@@ -137,7 +137,7 @@ fn all_listed(ids: &[String], list: &[String]) -> bool {
 const PLUGIN_SURFACE_COMMANDS: &[&str] = &[
     "dock_close", "dock_fold", "dock_hello", "meter_shown", "open_settings_at", "open_settings_window",
     "open_url", "plugin_abyss_siege", "plugin_boss_follow", "plugin_boss_timers", "plugin_close",
-    "plugin_fps_admin", "plugin_fps_watch", "plugin_hello", "plugin_http_request", "plugin_open", "plugin_screenshot", "plugin_set_docked", "plugin_storage_get",
+    "plugin_fps_admin", "plugin_fps_watch", "plugin_hello", "plugin_http_request", "plugin_network_status", "plugin_request_network", "plugin_open", "plugin_screenshot", "plugin_set_docked", "plugin_storage_get",
     "plugin_storage_set", "plugin_widget_area", "plugin_widget_close", "plugin_widget_drag",
     "plugin_widget_hello", "plugin_widget_open", "plugin_widget_place", "plugin_widget_post",
     "plugin_widget_send", "plugin_widget_where", "plugin_widgets_lock", "plugin_widgets_locked",
@@ -159,6 +159,14 @@ pub fn allowed_from(label: &str, command: &str) -> bool {
 /// plugin's own, or the dock.
 pub fn is_plugin_window(label: &str) -> bool {
     label.starts_with("plugin-") || label == dock::LABEL
+}
+
+/// Using a configuration panel counts as using the game for focus hiding.
+/// Combat widgets are deliberately excluded: showing an alert is not focus.
+pub fn configuration_focused(app: &tauri::AppHandle) -> bool {
+    app.webview_windows().into_iter().any(|(label, window)| {
+        is_plugin_window(&label) && window.is_focused().unwrap_or(false)
+    })
 }
 
 /// Whether window `label` is to stay hidden now: AION2 closed, and its
@@ -338,6 +346,10 @@ fn set_disabled(app: &tauri::AppHandle, id: &str, off: bool) {
 pub async fn plugin_set_enabled(app: tauri::AppHandle, id: String, enabled: bool) -> Result<PluginsView, String> {
     if !valid_id(&id) {
         return Err("not a plugin id".into());
+    }
+    if !enabled {
+        dock::cancel_manual_open();
+        network_permissions::consent::cancel(&app, Some(&id), None, false);
     }
     set_disabled(&app, &id, !enabled);
     reopened(&app, &id);
@@ -611,6 +623,7 @@ impl PluginHost {
     /// settings list. A developer folder wins over an installed copy of the
     /// same plugin, so its author tests their own files.
     pub fn reload(self: &Arc<Self>, app: &tauri::AppHandle) {
+        network_permissions::consent::cancel(app, None, None, false);
         let Some(state) = app.try_state::<AppState>() else { return };
         let dev = state.settings.get(DEV_MODE_KEY).as_deref() == Some("true");
         let folders: Vec<String> = if dev {
@@ -669,6 +682,7 @@ impl PluginHost {
         let any_decoders = loaded.iter().any(|l| !l.decoders.is_empty());
         tracing::info!("Plugins: {} loaded (developer mode {})", loaded.len(), if dev { "on" } else { "off" });
         *self.loaded.write().unwrap_or_else(|p| p.into_inner()) = loaded;
+        network_permissions::consent::cancel(app, None, None, false);
         *self.errors.write().unwrap_or_else(|p| p.into_inner()) = errors;
         *self.off.write().unwrap_or_else(|p| p.into_inner()) = disabled(app).into_iter().collect();
 
@@ -1684,6 +1698,7 @@ pub async fn plugin_install(app: tauri::AppHandle, id: String) -> Result<Plugins
 /// Remove an installed plugin. Its saved data stays, for a later reinstall.
 #[tauri::command]
 pub fn plugin_uninstall(app: tauri::AppHandle, id: String) -> Result<PluginsView, String> {
+    dock::cancel_manual_open();
     if !valid_id(&id) {
         return Err("not a plugin id".into());
     }
@@ -1709,6 +1724,7 @@ pub fn plugin_uninstall(app: tauri::AppHandle, id: String) -> Result<PluginsView
 /// Stop loading a folder (its saved data stays).
 #[tauri::command]
 pub fn plugin_remove_folder(app: tauri::AppHandle, path: String) -> Result<PluginsView, String> {
+    dock::cancel_manual_open();
     let host = host(&app)?;
     let state = app.try_state::<AppState>().ok_or("no app state")?;
     let mut folders: Vec<String> =
@@ -1960,8 +1976,7 @@ pub async fn plugin_open(app: tauri::AppHandle, window: tauri::WebviewWindow, id
     remember_window(&app, &id, Some("shown"));
     if dock::docks(&app, &id) {
         dock::set_configuration_open(true);
-        dock::sync(&app, Some(&id));
-        return Ok(());
+        return dock::open_manually(&app, &id);
     }
     open_window(&app, &id, true)?;
     Ok(())
@@ -2046,6 +2061,7 @@ pub fn bring_back_windows(app: &tauri::AppHandle) {
 #[tauri::command]
 pub fn plugin_window(app: tauri::AppHandle, window: tauri::WebviewWindow, plugin: Option<String>, visible: bool) -> Result<(), String> {
     let id = window_plugin(&window, plugin.as_deref())?;
+    if !visible { network_permissions::consent::cancel(&app, Some(&id), None, false); }
     require(&app, &id, "window")?;
     // Docked: its tab shown or hidden, the dock with the tabs. One hiding
     // itself stays when its tab is the dock's last and the dock the last way
@@ -2147,6 +2163,8 @@ pub fn plugin_close(app: tauri::AppHandle, window: tauri::WebviewWindow, plugin:
     // its alerts) until it is turned off in Settings; Open shows it again.
     // Closing it stopped everything it did, which players did not expect.
     let id = window_plugin(&window, plugin.as_deref())?;
+    dock::cancel_manual_open();
+    network_permissions::consent::cancel(&app, Some(&id), None, false);
     remember_window(&app, &id, Some("hidden"));
     // Docked: its tab goes; the dock with the last one (dock::sync).
     if window.label() == dock::LABEL {

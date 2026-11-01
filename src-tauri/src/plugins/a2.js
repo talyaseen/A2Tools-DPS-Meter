@@ -74,6 +74,9 @@
 //                                              { type: "status", server, connected }; [] stops
 //   await a2.http.request({ url, method: "GET" })  HTTPS through the host (permission
 //                                              "network:https://api.example.com" for that exact origin).
+//   await a2.http.permissionStatus(origin)      Query {origin, granted}; never prompts.
+//   await a2.http.requestPermission(origin)     From a click in the active main page:
+//                                              waits for the host's user decision.
 //                                              GET or POST; POST may include json, either may include
 //                                              an explicit bearer token. No cookies or arbitrary headers.
 //                                              Returns { status, body, contentType, fetchedAt }; body is
@@ -220,6 +223,8 @@
     followBosses: (server, bosses) => call("bossTimers.follow", [Number(server), (bosses || []).map(String)]),
     http: Object.freeze({
       request: (options) => call("http.request", [options]),
+      permissionStatus: (origin) => call("http.permissionStatus", [origin]),
+      requestPermission: (origin) => call("http.requestPermission", [origin]),
     }),
     // Meter 2.0.78 on: the game's frame rate.
     watchFps: (on) => call("fps.watch", [on !== false]),

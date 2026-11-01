@@ -120,6 +120,39 @@ The catalog install/update prompt still describes requested permissions; it
 does not replace this origin approval. The catalog validator must separately
 recognize and validate these permissions before publication.
 
+A plugin's configuration page can also ask for one declared origin from a
+user click. Both APIs take the canonical **bare origin**, for example
+`https://api.example.com`, with no trailing slash, path, query, credentials
+or fragment:
+
+```js
+const { granted } = await a2.http.permissionStatus("https://api.example.com");
+// Query only: never opens Settings or makes a network request.
+
+connectButton.addEventListener("click", async () => {
+  const decision = await a2.http.requestPermission("https://api.example.com");
+  if (!decision.granted) return;
+  // Only now may a2.http.request contact that origin.
+});
+```
+
+Both promises resolve to `{ origin, granted: boolean }`. The request waits
+for the user's decision on a host-owned Settings card, showing the exact
+origin, plugin name, ID, version and source folder. Opening Settings is not
+approval. Deny, cancellation, closing Settings or the 120-second expiry does
+not grant access. A denied origin is not prompted again during that meter
+session; the user can still approve it through **Settings → Plugins**.
+An already approved origin resolves as granted. Invalid origins, undeclared
+permissions, stale plugin sources, unavailable hosts and other errors reject;
+handle rejection without claiming access or a subscription is active.
+
+Only a real user interaction in the focused, active plugin configuration
+frame can request consent. Widgets cannot query or request permission;
+forward approved request results from the main page instead. The public SDK
+does not expose the native Settings approval resolver. Older SDKs may lack
+these methods and older hosts reject unknown calls; feature-detect the SDK
+and keep the manual Settings approval path available.
+
 From a plugin's main page (send results to widgets through `a2.widgets.send`):
 
 ```js

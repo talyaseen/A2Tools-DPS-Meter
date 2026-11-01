@@ -116,12 +116,13 @@ function setupBridge({
   view = 'settings', linux = true, discover, title = null, shown = true,
   loadsHidden = linux, reusesSettings = linux,
   now = () => 0, setItem = () => {}, getSettings = () => ({}), nativeListen,
-  storage = {}, nativeInvoke,
+  storage = {}, nativeInvoke, trackFocus = false,
 } = {}) {
   const calls = [];
   const listeners = new Map();
   const events = new Map();
   const domHandlers = new Map();
+  const timeouts = [], frames = [];
   const timers = new Map();
   const stored = new Map(Object.entries(storage));
   let timerId = 0;
@@ -153,7 +154,7 @@ function setupBridge({
         return nativeListen ? nativeListen(name) : Promise.resolve(() => {});
       } },
       opener: { open() {} },
-      window: { getCurrentWindow: () => ({ label: view, show: () => calls.push({ command: 'show' }), setFocus() {} }) },
+      window: { getCurrentWindow: () => ({ label: view, show: () => calls.push({ command: 'show' }), setFocus() { if (trackFocus) calls.push({ command: 'setFocus' }); } }) },
     },
   };
   const document = {
@@ -176,12 +177,14 @@ function setupBridge({
       getItem: key => stored.get(key) ?? null,
       removeItem: key => stored.delete(key), clear: () => stored.clear(),
     }, console: { log() {}, warn() {}, error() {} },
-    setTimeout() {}, requestAnimationFrame() {}, MutationObserver: class { observe() {} },
+    setTimeout(callback, delay) { timeouts.push({ callback, delay }); },
+    requestAnimationFrame(callback) { frames.push(callback); },
+    MutationObserver: class { observe() {} },
     setInterval: callback => { timers.set(++timerId, callback); return timerId; },
     clearInterval: id => timers.delete(id),
   });
   vm.runInContext(bridge, context);
-  return { window, document, calls, timers, listeners, stored, context, domHandlers };
+  return { window, document, calls, timers, listeners, stored, context, domHandlers, timeouts, frames };
 }
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
@@ -528,7 +531,8 @@ test('native startup policy controls lifecycle even when the browser platform di
 
   const visible = setupBridge({ linux: true, loadsHidden: false, reusesSettings: false });
   await visible.window.javaBridge.toolWindowReady('settings');
-  assert.ok(visible.calls.some(call => call.command === 'show'));
+  assert.ok(visible.calls.some(call => call.command === 'tool_window_ready'));
+  assert.ok(!visible.calls.some(call => call.command === 'show'));
   const reads = visible.calls.length;
   await visible.window.javaBridge.notifyUiReady();
   assert.equal(visible.calls.length, reads);
@@ -1009,12 +1013,13 @@ test('Linux settings is revealed by notifyUiReady, and a Close before then stays
   }
 });
 
-test('other platforms reveal settings from the page and never resync it', async () => {
+test('other platforms request native Settings reveal and never resync it', async () => {
   const app = setupBridge({ linux: false });
   let accountRefreshes = 0;
   app.window._dpsApp = { refreshAccountPanel: () => accountRefreshes++, syncSettingsForm: () => { throw new Error('resync'); } };
   await app.window.javaBridge.toolWindowReady('settings');
-  assert.deepEqual(app.calls.slice(-2).map(call => call.command), ['show', 'tool_window_ready']);
+  assert.equal(app.calls.at(-1).command, 'tool_window_ready');
+  assert.ok(!app.calls.some(call => call.command === 'show'));
   app.listeners.get('settings-shown')();
   await app.window.javaBridge.notifyUiReady();
   await settle();
@@ -1080,4 +1085,58 @@ test('opening settings does not reapply the default target mode to an ongoing fi
   assert.equal(state.mode, 'allTargets');
   assert.equal(app.settingsSelections.defaultMeterMode, 'bossTargets');
   assert.equal(writes.length, 0);
+});
+
+function runToolBootstrap(app) {
+  for (const { callback } of app.domHandlers.get('DOMContentLoaded') || []) callback();
+  for (let steps = 0; app.frames.length && steps < 10; steps++) app.frames.shift()();
+  assert.equal(app.frames.length, 0, 'bootstrap animation callbacks are bounded');
+  for (const { callback, delay } of app.timeouts) if (delay === 1200) callback();
+}
+
+test('Settings bootstrap, fallback and readiness all respect a native cancelled reveal', async () => {
+  for (const shown of [false, true]) {
+    const app = setupBridge({ linux: false, loadsHidden: false, shown, trackFocus: true });
+    runToolBootstrap(app);
+    await app.window.javaBridge.toolWindowReady('settings');
+    await settle();
+    const revealCalls = app.calls.filter(call => call.command === 'tool_window_ready');
+    assert.equal(revealCalls.length, 3, 'animation bootstrap, fallback and readiness each use native authorization');
+    assert.ok(revealCalls.every(call => call.args.label === 'settings'));
+    assert.ok(!app.calls.some(call => call.command === 'show' || call.command === 'setFocus'),
+      'a rejected or cancelled native reveal cannot be bypassed by page timers or readiness');
+  }
+});
+
+test('failed native Settings reveals never fall back to direct page activation', async () => {
+  const app = setupBridge({ linux: false, trackFocus: true, nativeInvoke: command =>
+    command === 'tool_window_ready' ? Promise.reject(new Error('consent cancelled')) : undefined });
+  runToolBootstrap(app);
+  await app.window.javaBridge.toolWindowReady('settings');
+  await settle();
+  assert.equal(app.calls.filter(call => call.command === 'tool_window_ready').length, 3);
+  assert.ok(!app.calls.some(call => call.command === 'show' || call.command === 'setFocus'));
+});
+
+test('Linux hidden Settings keeps its single native reveal after UI readiness', async () => {
+  const app = setupBridge({ linux: true, loadsHidden: true, trackFocus: true });
+  runToolBootstrap(app);
+  await app.window.javaBridge.toolWindowReady('settings');
+  assert.ok(!app.calls.some(call => call.command === 'tool_window_ready' || call.command === 'show' || call.command === 'setFocus'));
+  await app.window.javaBridge.notifyUiReady();
+  await settle();
+  assert.equal(app.calls.filter(call => call.command === 'tool_window_ready').length, 1);
+  assert.ok(!app.calls.some(call => call.command === 'show' || call.command === 'setFocus'));
+});
+
+test('Details and History retain their existing page reveal and focus paths', async () => {
+  for (const view of ['details', 'history']) {
+    const app = setupBridge({ view, linux: false, loadsHidden: false, trackFocus: true });
+    runToolBootstrap(app);
+    await app.window.javaBridge.toolWindowReady(view);
+    await settle();
+    assert.equal(app.calls.filter(call => call.command === 'show').length, 3);
+    assert.equal(app.calls.filter(call => call.command === 'setFocus').length, 3);
+    assert.equal(app.calls.filter(call => call.command === 'tool_window_ready').length, 1);
+  }
 });

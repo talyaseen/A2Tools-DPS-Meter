@@ -318,7 +318,8 @@ fn auto_hide_now(app: &tauri::AppHandle) {
         return;
     }
     let Some(window) = app.get_webview_window("main") else { return };
-    let front = platform::window_detector::is_aion2_foreground() || window.is_focused().unwrap_or(false);
+    let front = platform::window_detector::is_aion2_foreground() || window.is_focused().unwrap_or(false)
+        || crate::plugins::configuration_focused(app);
     let hidden = !window.is_visible().unwrap_or(true)
         || window.is_minimized().unwrap_or(false)
         || platform::window::is_hidden_in_place(&window);
@@ -2698,8 +2699,99 @@ fn take_settings_section() -> Option<String> {
     pending_settings_section().lock().take()
 }
 
+// A consent-triggered Settings open must not synthesize keys or take focus
+// after the player switches applications while the page is loading.
+
+struct ConsentSettingsOpen {
+    before: Option<isize>,
+    at: std::time::Instant,
+    reveal_attempted: bool,
+}
+impl ConsentSettingsOpen {
+    fn claim_reveal(&mut self) -> bool {
+        !std::mem::replace(&mut self.reveal_attempted, true)
+    }
+}
+static CONSENT_SETTINGS_OPEN: std::sync::Mutex<Option<ConsentSettingsOpen>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+mod consent_settings_tests {
+    use super::ConsentSettingsOpen;
+    #[test]
+    fn returning_to_requesting_plugin_does_not_rearm_consent_activation() {
+        let before = Some(42);
+        let mut open = ConsentSettingsOpen { before, at: std::time::Instant::now(), reveal_attempted: false };
+        let mut activations = 0;
+        if open.claim_reveal() { activations += 1; }
+        // Both page-ready and startup fallback see the original foreground
+        // again after the user returns to that plugin. Neither may reactivate.
+        for _ in 0..2 {
+            assert_eq!(open.before, before);
+            if open.claim_reveal() { activations += 1; }
+        }
+        assert_eq!(activations, 1);
+    }
+}
+
+
+pub(crate) async fn open_settings_for_network_consent(app: tauri::AppHandle, before: Option<isize>) -> Result<(), String> {
+    if !platform::window::user_focus_unchanged(before) {
+        return Err("focus changed before internet permission could be shown".into());
+    }
+    *CONSENT_SETTINGS_OPEN.lock().unwrap_or_else(|p| p.into_inner()) = Some(ConsentSettingsOpen { before, at: std::time::Instant::now(), reveal_attempted: false });
+    *pending_settings_section().lock() = Some("plugins".into());
+    let _ = app.emit_to("settings", "settings-section", "plugins");
+    open_settings_window_inner(app).await
+}
+
+/// Also used by the Linux page-load fallback: it cannot bypass consent's
+/// foreground guard or undo a cancellation.
+pub(crate) fn reveal_settings(window: &tauri::WebviewWindow) -> bool {
+    // Guard and show run in the same UI-thread callback. Tauri dispatches show
+    // immediately there, so it cannot be queued after the focus check.
+    let (send, receive) = std::sync::mpsc::sync_channel(1);
+    let target = window.clone();
+    if window.run_on_main_thread(move || { let _ = send.send(reveal_settings_on_ui(&target)); }).is_err() {
+        return false;
+    }
+    receive.recv().unwrap_or(false)
+}
+
+fn reveal_settings_on_ui(window: &tauri::WebviewWindow) -> bool {
+    let requested = CONSENT_SETTINGS_OPEN.lock().unwrap_or_else(|p| p.into_inner())
+        .as_mut().map(|request| (request.claim_reveal(), request.before, request.at));
+    if let Some((first, before, at)) = requested {
+        // Readiness can arrive repeatedly after the first show. Never steal
+        // focus back if the user returned to the originating plugin meanwhile.
+        if !first { return window.is_visible().unwrap_or(false); }
+        if window.is_focused().unwrap_or(false) { return true; }
+        if at.elapsed() > std::time::Duration::from_secs(5)
+            || !crate::plugins::network_permissions::consent::pending()
+            || !platform::window::user_focus_unchanged(before) {
+            crate::plugins::network_permissions::consent::cancel(window.app_handle(), None, Some("settings"), false);
+            platform::window_startup::hide_settings(window);
+            let _ = window.hide();
+            return false;
+        }
+        // Show through Tauri so an initially hidden window gets its frameless
+        // styles and visible state. Do not call its synthetic-focus workaround.
+        if window.show().is_err() { return false; }
+        platform::window::show_on_top_without_focus(window);
+        platform::window::activate_from_user(window, before);
+    } else {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    true
+}
+
 #[tauri::command]
 pub(crate) async fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
+    *CONSENT_SETTINGS_OPEN.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    open_settings_window_inner(app).await
+}
+
+async fn open_settings_window_inner(app: tauri::AppHandle) -> Result<(), String> {
     let ready = platform::window_startup::request_settings_open();
     if let Some(existing) = app.get_webview_window("settings") {
         if !ready {
@@ -2707,9 +2799,14 @@ pub(crate) async fn open_settings_window(app: tauri::AppHandle) -> Result<(), St
         }
         // In front of everything, even where focus is refused (Windows, from
         // the overlay), then asked for the keyboard for its fields.
-        platform::window::bring_forward(&existing);
+        let consent_open = CONSENT_SETTINGS_OPEN.lock().unwrap_or_else(|p| p.into_inner()).is_some();
+        if consent_open {
+            reveal_settings(&existing);
+        } else {
+            platform::window::bring_forward(&existing);
+            let _ = existing.set_focus();
+        }
         unpin_when_left(&app, "settings");
-        let _ = existing.set_focus();
         // Already open (perhaps behind the game): check the account again.
         // A hidden one also resumes its form, without repeating page startup.
         let _ = app.emit_to("settings", "settings-shown", ());
@@ -2748,6 +2845,7 @@ window.__A2_VIEW__ = 'settings';
 "#;
 
 fn build_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
+    let consent_open = CONSENT_SETTINGS_OPEN.lock().unwrap_or_else(|p| p.into_inner()).is_some();
     platform::window_startup::begin_settings_load();
     let (x, y, _, _) = birth_place(app, Some("settings"), (760.0, 820.0), false);
     let window = platform::window::share_process(tauri::WebviewWindowBuilder::new(
@@ -2758,6 +2856,7 @@ fn build_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
     // Injected before any page script. WebviewUrl::App is a path, so a ?query
     // gets percent-encoded — this is the one channel that is reliable.
     .initialization_script(SETTINGS_WINDOW_SCRIPT)
+    .focused(!consent_open)
     .title("A2Tools DPS Meter — Settings")
     .decorations(false)
     .transparent(false)
@@ -2775,7 +2874,7 @@ fn build_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
     // page-driven reveal deadlocks. Linux WebKit loads hidden, and the page
     // reveals it once the form is translated and wired.
     .background_color(tauri::window::Color(10, 14, 22, 255))
-    .visible(!platform::window_startup::loads_hidden())
+    .visible(!consent_open && !platform::window_startup::loads_hidden())
     .build()
     .map_err(|e| e.to_string())?;
     platform::window::joined(&window, platform::ProcessGroup::Meter);
@@ -2786,11 +2885,17 @@ fn build_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
         platform::window_startup::center_before_show(app, &window,
             tauri::LogicalSize { width: 760.0, height: 820.0 });
     }
+    // WebView2 needs a visible window to finish loading. Consent starts hidden
+    // on every OS and is revealed only after the foreground is checked again.
+    if consent_open && !platform::window_startup::loads_hidden() {
+        reveal_settings(&window);
+    }
     Ok(())
 }
 
 #[tauri::command]
 fn close_settings_window(app: tauri::AppHandle) {
+    crate::plugins::network_permissions::consent::cancel(&app, None, Some("settings"), true);
     if let Some(window) = app.get_webview_window("settings") {
         if platform::window_startup::reuses_settings() {
             // The page already announced `settings-hidden`.
@@ -2813,8 +2918,12 @@ fn tool_window_ready(app: tauri::AppHandle, label: String) -> bool {
         return false;
     }
     let Some(window) = app.get_webview_window(&label) else { return false };
-    let _ = window.show();
-    let _ = window.set_focus();
+    if label == "settings" {
+        if !reveal_settings(&window) { return false; }
+    } else {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
     // Resizable from the outer edge too (Linux), from the first time it shows.
     static EDGES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
     let mut hooked = EDGES.lock().unwrap_or_else(|p| p.into_inner());
@@ -3663,6 +3772,10 @@ pub fn run() {
         // Closing the meter quits, even with Details, History or a kept
         // Settings window still open.
         .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed | tauri::WindowEvent::CloseRequested { .. })
+                && (window.label() == "settings" || crate::plugins::is_plugin_window(window.label())) {
+                crate::plugins::network_permissions::consent::cancel(window.app_handle(), None, Some(window.label()), window.label() == "settings");
+            }
             // Plugin windows open where they were left, at the size they
             // were left (#76).
             if let tauri::WindowEvent::Moved(at) = event
@@ -4240,7 +4353,8 @@ pub fn run() {
                                 } else if wanted
                                     && !(on("dpsMeter.autoHideMeter")
                                         && !platform::window_detector::is_aion2_foreground()
-                                        && !window.is_focused().unwrap_or(false))
+                                        && !window.is_focused().unwrap_or(false)
+                                        && !crate::plugins::configuration_focused(&handle))
                                 {
                                     // Hidden by the player meanwhile, it stays
                                     // so; with another program in front and
@@ -4272,7 +4386,8 @@ pub fn run() {
                         if auto_hide {
                             if let Some(window) = handle.get_webview_window("main") {
                                 let aion_fg = platform::window_detector::is_aion2_foreground();
-                                let is_self_fg = window.is_focused().unwrap_or(false);
+                                let is_self_fg = window.is_focused().unwrap_or(false)
+                                    || crate::plugins::configuration_focused(&handle);
                                 let is_visible = window.is_visible().unwrap_or(true);
                                 let is_minimized = window.is_minimized().unwrap_or(false);
                                 if tick_count % 4 == 0 {
@@ -4546,6 +4661,10 @@ pub fn run() {
             crate::plugins::network::plugin_http_request,
             crate::plugins::network_permissions::plugin_approve_network,
             crate::plugins::network_permissions::plugin_revoke_network,
+            crate::plugins::network_permissions::consent::plugin_network_status,
+            crate::plugins::network_permissions::consent::plugin_request_network,
+            crate::plugins::network_permissions::consent::plugin_network_prompt,
+            crate::plugins::network_permissions::consent::plugin_answer_network_prompt,
             crate::plugins::plugin_storage_get,
             crate::plugins::plugin_boss_timers,
             crate::plugins::plugin_abyss_siege,

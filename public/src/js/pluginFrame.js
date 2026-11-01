@@ -25,6 +25,32 @@
 
     const allowed = (permission) => !!manifest?.permissions?.includes(permission);
     const send = (msg) => frame?.contentWindow?.postMessage({ a2: 1, ...msg }, "*");
+    // These calls accept a declared bare origin, never a URL to normalize.
+    const networkOrigin = (origin) => {
+      if (typeof origin !== "string" || origin.length > 4096) throw new Error("invalid HTTPS origin");
+      const url = new URL(origin);
+      if (url.protocol !== "https:" || url.port || origin !== url.origin) throw new Error("use a canonical bare HTTPS origin on port 443");
+      if (!allowed("network:" + origin)) throw new Error('the plugin lacks the "network:' + origin + '" permission');
+      return origin;
+    };
+    const permissionResult = (origin, result) => {
+      if (!result || result.origin !== origin || typeof result.granted !== "boolean") throw new Error("invalid network permission response");
+      return { origin, granted: result.granted };
+    };
+    let permissionPending = false;
+    const requestPermission = async (value) => {
+      const origin = networkOrigin(value);
+      // Read trusted parent state, not a claim supplied by the plugin. This
+      // check runs before IPC; only a click in this active configuration frame
+      // may open the host's consent card. Widgets have no such dispatch.
+      if (!window.navigator?.userActivation?.isActive || !document.hasFocus() || document.hidden || document.activeElement !== frame) {
+        throw new Error("internet access must be requested from a click in the active plugin window");
+      }
+      if (permissionPending) throw new Error("a network permission request is already in progress");
+      permissionPending = true;
+      try { return permissionResult(origin, await call("plugin_request_network", { origin })); }
+      finally { permissionPending = false; }
+    };
     let httpPending = false;
     const httpRequest = async (options) => {
       if (!options || typeof options !== "object" || Array.isArray(options)) throw new Error("not an HTTP request");
@@ -123,6 +149,11 @@
         return call("plugin_boss_follow", { server: Number(server), bosses: (Array.isArray(bosses) ? bosses : []).map(String) });
       },
       "http.request": ([options]) => httpRequest(options),
+      "http.permissionStatus": async ([value]) => {
+        const origin = networkOrigin(value);
+        return permissionResult(origin, await call("plugin_network_status", { origin }));
+      },
+      "http.requestPermission": ([origin]) => requestPermission(origin),
       // The game's frame rate (meter 2.0.78): "fps" events while asked.
       "fps.watch": ([on]) => {
         if (!allowed("fps")) throw new Error('the plugin lacks the "fps" permission');

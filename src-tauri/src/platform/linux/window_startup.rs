@@ -72,9 +72,8 @@ pub fn prepare_settings(window: &tauri::WebviewWindow) {
             // Recover from a page that never got ready, but never undo a Close.
             if !SETTINGS_READY.swap(true, Ordering::SeqCst)
                 && SETTINGS_OPEN_REQUESTED.load(Ordering::SeqCst)
-                && target.show().is_ok()
+                && crate::app::reveal_settings(&target)
             {
-                let _ = target.set_focus();
                 // The bridge may already be waiting for a slow form startup.
                 // A fallback reveal is also an activation, so resume its work.
                 let _ = target.emit_to(target.label(), "settings-shown", ());

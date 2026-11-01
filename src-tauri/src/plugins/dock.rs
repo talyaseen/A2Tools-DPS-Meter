@@ -80,6 +80,57 @@ pub fn sync_focus_hiding(app: &tauri::AppHandle) {
     }
 }
 
+// A close or a newer manual open cancels an open still building its window.
+static MANUAL_OPEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub(super) fn cancel_manual_open() {
+    MANUAL_OPEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn manual_open_current(request: u64, current: u64, elapsed: std::time::Duration, tab_shown: bool) -> bool {
+    request == current && elapsed < std::time::Duration::from_secs(2) && tab_shown
+}
+
+/// Only a host Open action may activate the dock. Plugin callbacks use
+/// passive sync instead; a tab-selection event is not a focus request.
+/// Called from async commands, where building a window cannot deadlock.
+pub(super) fn open_manually(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
+    if !members(app).iter().any(|member| member == id) {
+        return Err("that plugin is not in the dock".into());
+    }
+    let request = MANUAL_OPEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    let started = std::time::Instant::now();
+    let foreground = crate::platform::window::front_window();
+    if app.get_webview_window(LABEL).is_none() {
+        *first_focus().lock().unwrap_or_else(|p| p.into_inner()) = Some(id.to_string());
+        // Build hidden until the request is rechecked. A passive startup
+        // build may have won the label while we built.
+        if let Err(error) = build(app, false) {
+            if app.get_webview_window(LABEL).is_none() {
+                return Err(error);
+            }
+        }
+    }
+    let current = || manual_open_current(
+        request, MANUAL_OPEN.load(std::sync::atomic::Ordering::Relaxed),
+        started.elapsed(), shown_members(app).iter().any(|member| member == id),
+    ) && crate::platform::window::user_focus_unchanged(foreground);
+    if !current() {
+        return Ok(());
+    }
+    sync(app, Some(id));
+    if let Some(window) = app.get_webview_window(LABEL) {
+        if current() && window.is_visible().unwrap_or(false)
+            && !crate::platform::window::is_hidden_in_place(&window)
+        {
+            // One attempt only. No simulated keys, cursor unlocking or retry
+            // after Windows refuses a foreground request.
+            crate::platform::window::activate_from_user(&window, foreground);
+        }
+    }
+    Ok(())
+}
+
 /// The plugin a call from window `label` is for. A plugin's own window is its
 /// plugin's, whatever the call says; the dock's calls name their plugin,
 /// which must be one docked now (`docked`). Anything else is refused.
@@ -150,6 +201,7 @@ pub fn sync(app: &tauri::AppHandle, focus: Option<&str>) {
     let window = app.get_webview_window(LABEL);
     if members.is_empty() {
         set_configuration_open(false);
+        cancel_manual_open();
         if let Some(window) = window {
             let _ = window.close();
         }
@@ -234,6 +286,7 @@ pub fn take_raised(id: &str) -> Option<Raised> {
 
 /// The dock out of sight, its tabs as they are (shown again as they were).
 pub fn hide_now(app: &tauri::AppHandle) {
+    cancel_manual_open();
     if let Some(window) = app.get_webview_window(LABEL) {
         crate::platform::window::hide_in_place(&window);
         crate::app::keep_something_on_screen(app, LABEL);
@@ -338,6 +391,8 @@ pub fn dock_fold(window: tauri::WebviewWindow, height: Option<f64>) -> Result<()
 #[tauri::command]
 pub fn dock_close(app: tauri::AppHandle) {
     set_configuration_open(false);
+    cancel_manual_open();
+    super::network_permissions::consent::cancel(&app, None, Some(LABEL), false);
     let open = shown_members(&app);
     if let Some(state) = app.try_state::<AppState>() {
         state.settings.set(CLOSED_WITH_KEY, &serde_json::to_string(&open).unwrap_or_default());
@@ -366,11 +421,21 @@ pub async fn plugin_set_docked(app: tauri::AppHandle, id: String, docked: bool) 
     super::remember_window(&app, &id, Some("shown"));
     if docked {
         set_configuration_open(true);
+        // Keep the originating window until the focus request is consumed:
+        // closing it first changes foreground ownership during construction.
+        let opened = if members(&app).contains(&id) {
+            open_manually(&app, &id)
+        } else {
+            // A disabled plugin may still change its docking preference.
+            sync(&app, None);
+            Ok(())
+        };
         if let Some(window) = app.get_webview_window(&format!("plugin-{id}")) {
             let _ = window.close();
         }
-        sync(&app, Some(&id));
+        opened?;
     } else {
+        cancel_manual_open();
         // Out of the dock first (its frame stops), then in its own window.
         sync(&app, None);
         if !disabled(&app).contains(&id) {
@@ -384,6 +449,21 @@ pub async fn plugin_set_docked(app: tauri::AppHandle, id: String, docked: bool) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_manual_open_survives_construction_but_not_a_close_or_newer_open() {
+        use std::time::Duration;
+        let request = 3;
+        assert!(manual_open_current(request, 3, Duration::from_millis(150), true));
+        // Close, then an alert shows the same tab: still not a manual request.
+        assert!(!manual_open_current(request, 4, Duration::from_millis(200), true));
+        // Another Open superseded this request while its window was building.
+        assert!(!manual_open_current(request, 5, Duration::from_millis(200), true));
+        // Closed, disabled, removed or popped out before construction finished.
+        assert!(!manual_open_current(request, 3, Duration::from_millis(150), false));
+        // A slow build must not interrupt something the user moved on to.
+        assert!(!manual_open_current(request, 3, Duration::from_secs(2), true));
+    }
 
     fn docked() -> Vec<String> {
         vec!["event-timers".to_string(), "ping".to_string()]
