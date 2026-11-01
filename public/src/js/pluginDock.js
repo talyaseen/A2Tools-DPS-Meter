@@ -89,7 +89,7 @@
       d.panel.classList.toggle("dockPanelAlert", !!d.alert);
       d.panel.classList.toggle("dockPanelFirst", !d.panel.hidden && first);
       if (!d.panel.hidden) first = false;
-      if (!d.shown) continue;
+      // Keep configuration reachable after a plugin hides its panel or alert.
       d.tab.classList.toggle("dockTabActive", active && !stacked);
       d.tab.classList.toggle("dockTabAlert", !!d.alert);
       d.tab.setAttribute("aria-selected", String(active));
@@ -142,7 +142,10 @@
     tab.style.setProperty("--mark-hue", String(hue));
     tab.setAttribute("aria-label", d.name);
     tab.title = `${d.name} ${d.version}`;
-    tab.addEventListener("click", () => activate(d.id));
+    tab.addEventListener("click", () => {
+      invoke("plugin_open", { id: d.id }).then(() => activate(d.id))
+        .catch((e) => showToast(String(e)));
+    });
     tab.addEventListener("dragstart", (e) => {
       dragging = d.id;
       e.dataTransfer.effectAllowed = "move";

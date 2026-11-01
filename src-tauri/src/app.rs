@@ -231,6 +231,9 @@ fn hide_with_meter(app: &tauri::AppHandle, meter: bool, hidden: &mut std::collec
 fn show_with_meter(app: &tauri::AppHandle, hidden: &mut std::collections::HashSet<String>) {
     for label in hidden.drain() {
         let Some(window) = app.get_webview_window(&label) else { continue };
+        if label == crate::plugins::dock::LABEL && !crate::plugins::dock::wants_visible(app) {
+            continue;
+        }
         // A widget its plugin closed meanwhile stays hidden.
         if crate::plugins::widgets::is_closed(&label) || crate::plugins::widgets::hold_hidden(app, &window) {
             continue;
