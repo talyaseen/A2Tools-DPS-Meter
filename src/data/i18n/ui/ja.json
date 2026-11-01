@@ -227,6 +227,7 @@
     },
     "fightTimeline": "戦闘タイムライン",
     "replay": {
+      "noOthersTiming": "攻撃時刻が記録されていないため、リプレイでは「その他」を除外します。観測された合計を見るにはリプレイを終了してください。",
       "label": "リプレイ",
       "title": "リプレイ",
       "play": "リプレイを再生",
@@ -301,6 +302,7 @@
     "sort": "並べ替え",
     "sortNewest": "新しい順",
     "sortFastest": "最速討伐",
+    "nearbyDps": "周辺DPS",
     "sortPartyDps": "パーティーDPS",
     "sortMyDps": "自分のDPS",
     "sortRecent": "新しい順",
@@ -807,6 +809,7 @@
     "waitingBoss": "ボス待機中"
   },
   "meter": {
+    "jitterTip": "ジッター: {value}ms。直近10回のpingで、連続する測定値の差の絶対値を平均した値です。測定間隔は約10秒です。",
     "identifyingPlayer": "#{id}",
     "a2toolsUser": "A2Toolsを使用中",
     "dpsSuffix": "/s",

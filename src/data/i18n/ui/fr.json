@@ -227,6 +227,7 @@
     },
     "fightTimeline": "Chronologie du combat",
     "replay": {
+      "noOthersTiming": "La relecture exclut les autres joueurs, car les instants de leurs coups n’ont pas été enregistrés. Quittez la relecture pour voir le total observé.",
       "label": "Relecture",
       "title": "Relecture",
       "play": "Lancer la relecture",
@@ -301,6 +302,7 @@
     "sort": "Trier",
     "sortNewest": "Plus récents",
     "sortFastest": "Victoire la plus rapide",
+    "nearbyDps": "DPS à proximité",
     "sortPartyDps": "DPS du groupe",
     "sortMyDps": "Votre DPS",
     "sortRecent": "Plus récents",
@@ -807,6 +809,7 @@
     "waitingBoss": "Pas de boss"
   },
   "meter": {
+    "jitterTip": "Gigue : {value} ms. Moyenne des écarts absolus entre pings consécutifs, sur les 10 dernières mesures (espacées d’environ 10 secondes).",
     "identifyingPlayer": "#{id}",
     "a2toolsUser": "Utilise A2Tools",
     "dpsSuffix": "/s",

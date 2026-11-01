@@ -227,6 +227,7 @@
     },
     "fightTimeline": "戰鬥時間軸",
     "replay": {
+      "noOthersTiming": "其他玩家的命中時間未被記錄，因此重播不包含「其他」。結束重播即可查看觀測到的總傷害。",
       "label": "重播",
       "title": "重播",
       "play": "播放重播",
@@ -306,6 +307,7 @@
     "sort": "排序",
     "sortNewest": "最新",
     "sortFastest": "最快擊殺",
+    "nearbyDps": "附近 DPS",
     "sortPartyDps": "隊伍 DPS",
     "sortMyDps": "你的 DPS",
     "sortRecent": "最新",
@@ -807,6 +809,7 @@
     "waitingBoss": "等待首領"
   },
   "meter": {
+    "jitterTip": "抖動：{value} 毫秒。最近10次ping測量中，相鄰測量值差異的絕對值平均數（測量間隔約10秒）。",
     "identifyingPlayer": "#{id}",
     "a2toolsUser": "使用 A2Tools",
     "dpsSuffix": "/秒",

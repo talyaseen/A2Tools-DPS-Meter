@@ -10,6 +10,7 @@ const DOTNET_EPOCH_OFFSET_MS: i64 = 62135596800000;
 const MAX_PING_MS: i32 = 9999;
 const MIN_PING_RS_BYTES: usize = 12;
 const MAX_HISTORY: usize = 10_000;
+const JITTER_SAMPLES: usize = 10;
 /// Physical size of the client's ping request frame. Its body is encrypted, but
 /// nothing else the client sends is this size: 12 bytes while the timestamp was
 /// wall-clock, 13 since it became an arbitrary-epoch clock. Once every ten
@@ -48,6 +49,8 @@ pub struct PingTracker {
 struct Inner {
     last_ping: Option<i32>,
     history: Vec<(i64, i32)>,
+    /// One reading per echoed request timestamp, excluding retransmissions.
+    jitter_samples: VecDeque<(i64, i32)>,
     /// Capture times of recent ping requests, oldest first.
     requests: VecDeque<i64>,
     /// Local capture clock minus the client's ping clock, once two pings agree
@@ -77,6 +80,7 @@ impl PingTracker {
             inner: Mutex::new(Inner {
                 last_ping: None,
                 history: Vec::new(),
+                jitter_samples: VecDeque::new(),
                 requests: VecDeque::new(),
                 clock_offset: None,
                 prev_offsets: Vec::new(),
@@ -190,6 +194,12 @@ impl PingTracker {
                     if inner.history.len() > MAX_HISTORY {
                         inner.history.remove(0);
                     }
+                    if !inner.jitter_samples.iter().any(|(sent, _)| *sent == client_sent_raw) {
+                        inner.jitter_samples.push_back((client_sent_raw, rtt_ms));
+                        if inner.jitter_samples.len() > JITTER_SAMPLES {
+                            inner.jitter_samples.pop_front();
+                        }
+                    }
                 }
                 i += 12;
             } else {
@@ -200,6 +210,21 @@ impl PingTracker {
 
     pub fn current_ping_ms(&self) -> Option<i32> {
         self.inner.lock().last_ping
+    }
+
+    /// Mean absolute change between consecutive RTT readings, over the latest
+    /// ten distinct accepted responses. This is round-trip variation, not one-way packet
+    /// jitter. Reading it again adds no samples; reset clears the window.
+    pub fn current_jitter_ms(&self) -> Option<f64> {
+        let inner = self.inner.lock();
+        let recent = &inner.jitter_samples;
+        if recent.len() < 2 {
+            return None;
+        }
+        let change: i64 = recent.iter().zip(recent.iter().skip(1))
+            .map(|(previous, next)| (i64::from(next.1) - i64::from(previous.1)).abs())
+            .sum();
+        Some(change as f64 / (recent.len() - 1) as f64)
     }
 
     pub fn get_ping_history(&self, start_ms: i64, end_ms: i64) -> Vec<(i64, i32)> {
@@ -213,6 +238,7 @@ impl PingTracker {
         let mut inner = self.inner.lock();
         inner.last_ping = None;
         inner.history.clear();
+        inner.jitter_samples.clear();
         inner.requests.clear();
         inner.clock_offset = None;
         inner.prev_offsets.clear();
@@ -350,6 +376,92 @@ mod tests {
         data.extend_from_slice(&client_sent.to_le_bytes());
         data.extend_from_slice(&at.to_le_bytes());
         cap(SERVER, CLIENT, at, data)
+    }
+
+    fn add_rtt(t: &PingTracker, sample: i64, rtt: i64) {
+        let sent = 1_790_000_000_000 + sample * 10_000;
+        t.on_packet(&response(sent + rtt, sent + DOTNET_EPOCH_OFFSET_MS), SERVER);
+    }
+
+    #[test]
+    fn jitter_waits_for_two_samples_and_constant_latency_is_zero() {
+        let t = PingTracker::new();
+        assert_eq!(t.current_jitter_ms(), None);
+        add_rtt(&t, 0, 75);
+        assert_eq!(t.current_jitter_ms(), None);
+        for n in 1..15 {
+            add_rtt(&t, n, 75);
+            assert_eq!(t.current_jitter_ms(), Some(0.0));
+        }
+        assert_eq!(t.current_ping_ms(), Some(75));
+    }
+
+    #[test]
+    fn jitter_is_mean_absolute_change_including_equal_samples() {
+        let t = PingTracker::new();
+        for (n, rtt) in [100, 100, 130, 110].into_iter().enumerate() {
+            add_rtt(&t, n as i64, rtt);
+        }
+        assert_eq!(t.current_jitter_ms(), Some(50.0 / 3.0));
+        assert_eq!(t.current_ping_ms(), Some(110));
+    }
+
+    #[test]
+    fn jitter_uses_only_the_latest_ten_accepted_readings() {
+        let t = PingTracker::new();
+        add_rtt(&t, 0, 1_000);
+        for n in 1..=10 {
+            add_rtt(&t, n, n * 10);
+        }
+        assert_eq!(t.current_jitter_ms(), Some(10.0), "the old spike left the window");
+        add_rtt(&t, 11, 100);
+        assert_eq!(t.current_jitter_ms(), Some(80.0 / 9.0));
+        assert_eq!(t.inner.lock().history.len(), 12, "fight history remains intact");
+    }
+
+    #[test]
+    fn invalid_rtts_and_display_refreshes_add_no_jitter_samples() {
+        let t = PingTracker::new();
+        add_rtt(&t, 0, 60);
+        add_rtt(&t, 1, 90);
+        for rtt in [-1, 0, 10_000] {
+            add_rtt(&t, 2, rtt);
+        }
+        for _ in 0..20 {
+            assert_eq!(t.current_jitter_ms(), Some(30.0));
+        }
+        assert_eq!(t.current_ping_ms(), Some(90));
+        assert_eq!(t.inner.lock().history.len(), 2);
+    }
+
+    #[test]
+    fn a_retransmitted_response_does_not_change_jitter() {
+        let t = PingTracker::new();
+        add_rtt(&t, 0, 10);
+        add_rtt(&t, 1, 30);
+        assert_eq!(t.current_jitter_ms(), Some(20.0));
+        // Same echoed request, received again later with a different apparent RTT.
+        add_rtt(&t, 1, 90);
+        assert_eq!(t.current_jitter_ms(), Some(20.0));
+        assert_eq!(t.current_ping_ms(), Some(90), "existing ping behavior is unchanged");
+        assert_eq!(t.inner.lock().history.len(), 3, "existing fight history is unchanged");
+        add_rtt(&t, 2, 60);
+        assert_eq!(t.current_jitter_ms(), Some(25.0));
+    }
+
+    #[test]
+    fn reset_removes_jitter_and_warms_up_from_the_new_session() {
+        let t = PingTracker::new();
+        add_rtt(&t, 0, 50);
+        add_rtt(&t, 1, 100);
+        assert_eq!(t.current_jitter_ms(), Some(50.0));
+        t.reset();
+        assert_eq!(t.current_jitter_ms(), None);
+        assert_eq!(t.current_ping_ms(), None);
+        add_rtt(&t, 2, 99);
+        assert_eq!(t.current_jitter_ms(), None);
+        add_rtt(&t, 3, 100);
+        assert_eq!(t.current_jitter_ms(), Some(1.0));
     }
 
     #[test]

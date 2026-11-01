@@ -232,6 +232,7 @@
     },
     "fightTimeline": "Fight timeline",
     "replay": {
+      "noOthersTiming": "Replay excludes Others because their hit times were not recorded. End replay to see the observed total.",
       "label": "Replay",
       "title": "Replay",
       "play": "Play replay",
@@ -306,6 +307,7 @@
     "sort": "Sort",
     "sortNewest": "Newest",
     "sortFastest": "Fastest kill",
+    "nearbyDps": "Nearby DPS",
     "sortPartyDps": "Party DPS",
     "sortMyDps": "Your DPS",
     "sortRecent": "Most recent",
@@ -807,6 +809,7 @@
     "waitingBoss": "No boss yet"
   },
   "meter": {
+    "jitterTip": "Jitter: {value} ms. Average absolute change between consecutive pings, using the last 10 samples (about 10 seconds apart).",
     "identifyingPlayer": "#{id}",
     "a2toolsUser": "Uses A2Tools",
     "dpsSuffix": "/s",

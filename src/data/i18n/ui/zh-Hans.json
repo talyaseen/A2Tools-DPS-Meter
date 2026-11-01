@@ -227,6 +227,7 @@
     },
     "fightTimeline": "战斗时间线",
     "replay": {
+      "noOthersTiming": "其他玩家的命中时间未被记录，因此回放不包含“其他”。结束回放即可查看观测到的总伤害。",
       "label": "回放",
       "title": "回放",
       "play": "播放回放",
@@ -306,6 +307,7 @@
     "sort": "排序",
     "sortNewest": "最新",
     "sortFastest": "最快击杀",
+    "nearbyDps": "附近 DPS",
     "sortPartyDps": "队伍 DPS",
     "sortMyDps": "你的 DPS",
     "sortRecent": "最新",
@@ -807,6 +809,7 @@
     "waitingBoss": "等待首领"
   },
   "meter": {
+    "jitterTip": "抖动：{value} 毫秒。最近10次ping测量中，相邻测量值差异的绝对值平均数（测量间隔约10秒）。",
     "identifyingPlayer": "#{id}",
     "a2toolsUser": "使用 A2Tools",
     "dpsSuffix": "/秒",

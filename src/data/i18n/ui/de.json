@@ -227,6 +227,7 @@
     },
     "fightTimeline": "Kampfverlauf",
     "replay": {
+      "noOthersTiming": "Andere sind im Replay nicht enthalten, da ihre Trefferzeiten fehlen. Beende das Replay, um die beobachtete Gesamtsumme zu sehen.",
       "label": "Wiedergabe",
       "title": "Wiedergabe",
       "play": "Wiedergabe abspielen",
@@ -301,6 +302,7 @@
     "sort": "Sortieren",
     "sortNewest": "Neueste",
     "sortFastest": "Schnellster Sieg",
+    "nearbyDps": "Umgebungs-DPS",
     "sortPartyDps": "Gruppen-DPS",
     "sortMyDps": "Dein DPS",
     "sortRecent": "Neueste",
@@ -807,6 +809,7 @@
     "waitingBoss": "Kein Boss"
   },
   "meter": {
+    "jitterTip": "Jitter: {value} ms. Mittlere absolute Änderung zwischen aufeinanderfolgenden Pings aus den letzten 10 Messungen (etwa alle 10 Sekunden).",
     "identifyingPlayer": "#{id}",
     "a2toolsUser": "Nutzt A2Tools",
     "dpsSuffix": "/s",

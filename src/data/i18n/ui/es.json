@@ -227,6 +227,7 @@
     },
     "fightTimeline": "Cronología del combate",
     "replay": {
+      "noOthersTiming": "La repetición excluye a los demás porque no se registraron los momentos de sus golpes. Finaliza la repetición para ver el total observado.",
       "label": "Repetición",
       "title": "Repetición",
       "play": "Reproducir repetición",
@@ -301,6 +302,7 @@
     "sort": "Ordenar",
     "sortNewest": "Más recientes",
     "sortFastest": "Victoria más rápida",
+    "nearbyDps": "DPS cercano",
     "sortPartyDps": "DPS del grupo",
     "sortMyDps": "Tu DPS",
     "sortRecent": "Más recientes",
@@ -807,6 +809,7 @@
     "waitingBoss": "Sin jefe aún"
   },
   "meter": {
+    "jitterTip": "Jitter: {value} ms. Promedio de las diferencias absolutas entre pings consecutivos de las últimas 10 muestras (aproximadamente cada 10 segundos).",
     "identifyingPlayer": "#{id}",
     "a2toolsUser": "Usa A2Tools",
     "dpsSuffix": "/s",

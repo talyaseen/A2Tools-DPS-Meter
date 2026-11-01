@@ -232,7 +232,7 @@ fn show_with_meter(app: &tauri::AppHandle, hidden: &mut std::collections::HashSe
     for label in hidden.drain() {
         let Some(window) = app.get_webview_window(&label) else { continue };
         // A widget its plugin closed meanwhile stays hidden.
-        if crate::plugins::widgets::is_closed(&label) {
+        if crate::plugins::widgets::is_closed(&label) || crate::plugins::widgets::hold_hidden(app, &window) {
             continue;
         }
         if !platform::window::reveal_in_place(&window) {
@@ -4132,6 +4132,7 @@ pub fn run() {
                 let mut tick_count: u64 = 0;
                 let mut hide_delay: u64 = 0; // ticks to wait before hiding
                 let mut last_ping: Option<u64> = None;
+                let mut last_jitter: Option<f64> = None;
                 // The meter hidden because AION2 is closed (Settings).
                 let mut hidden_closed = false;
                 // Hide while AION2 is closed or while solo, as last checked.
@@ -4162,6 +4163,14 @@ pub fn run() {
                                 last_ping = Some(ping as u64);
                                 let _ = handle.emit("ping-update", ping);
                             }
+                        }
+
+                        // Calculated from accepted RTT samples, not these UI refreshes.
+                        // Send None after a reset so an old value does not linger.
+                        let jitter = state.ping_tracker.current_jitter_ms();
+                        if jitter != last_jitter || tick_count % 4 == 0 {
+                            last_jitter = jitter;
+                            let _ = handle.emit("jitter-update", jitter);
                         }
 
                         // Odyle energy: sent when it changes, and every 2 s
@@ -4240,6 +4249,7 @@ pub fn run() {
                         }
 
                         // --- Auto-hide when AION2 loses focus (every tick) ---
+                        crate::plugins::widgets::sync_focus_holds(&handle);
                         // The meter's own hiding waits while it is hidden
                         // anyway (by the player, AION2 closed, solo, or out
                         // of combat); the rest below doesn't: Ping's icon

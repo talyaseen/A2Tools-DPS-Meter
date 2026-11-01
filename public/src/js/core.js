@@ -656,6 +656,7 @@ class DpsApp {
       this.detailsUI?.updateLabels?.();
       this.detailsUI?.refresh?.();
       this.updateDisplayToggleLabel();
+      this.updatePing();
       if (this.battleTime?.setAnalysisTextProvider) {
         this.battleTime.setAnalysisTextProvider(getBattleTimeStatusText);
       }
@@ -6929,13 +6930,31 @@ class DpsApp {
       return;
     }
     const ms = typeof pushedMs === "number" ? pushedMs : window.javaBridge?.getPingMs?.();
-    if (typeof ms !== "number" || ms < 0) {
+    if (!Number.isFinite(ms) || ms < 0) {
       this.pingEl.classList.remove("isVisible");
       return;
     }
     const textEl = this.pingEl.querySelector(".pingText");
     if (textEl) textEl.textContent = `${ms}ms`;
     else this.pingEl.textContent = `${ms}ms`;
+    const jitterEl = this.pingEl.querySelector(".pingJitter");
+    if (jitterEl) {
+      const jitter = window.javaBridge?.getJitterMs?.();
+      jitterEl.hidden = !Number.isFinite(jitter) || jitter < 0;
+      if (!jitterEl.hidden) {
+        const value = jitter.toFixed(1);
+        jitterEl.textContent = `J ${value}ms`;
+        const tip = this.i18n?.t?.("meter.jitterTip",
+          "Jitter: {value} ms. Average absolute change between consecutive pings, using the last 10 samples (about 10 seconds apart).")
+          ?? "Jitter: {value} ms. Average absolute change between consecutive pings, using the last 10 samples (about 10 seconds apart).";
+        jitterEl.title = tip.replace("{value}", value);
+        jitterEl.setAttribute("aria-label", jitterEl.title);
+      } else {
+        jitterEl.textContent = "";
+        jitterEl.title = "";
+        jitterEl.removeAttribute("aria-label");
+      }
+    }
     this.pingEl.classList.add("isVisible");
     this.pingEl.classList.remove("ping-good", "ping-warn", "ping-high", "ping-bad");
     this.pingEl.classList.add(
